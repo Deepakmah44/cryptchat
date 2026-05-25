@@ -56,8 +56,8 @@
         <!-- Tabs -->
         <div class="join-tabs">
           <button class="tab-btn active" data-tab="personal">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
-            Personal Chat
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Secure Direct
           </button>
           <button class="tab-btn" data-tab="room">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
@@ -68,21 +68,21 @@
         <!-- Personal Chat Tab -->
         <div class="tab-content active" id="tab-personal">
           <div class="personal-chat-header">
-            <span class="heart-icon">💕</span>
-            <p class="personal-desc">Dono log same secret phrase daalo — automatically connect ho jaoge. Koi room code ki zaroorat nahi!</p>
+            <span class="secure-icon">🛡️</span>
+            <p class="personal-desc">Establish a secure peer-to-peer connection. Enter a matching shared phrase to connect instantly.</p>
           </div>
           <div class="input-group">
-            <label for="secret-phrase-input">Secret Phrase</label>
+            <label for="secret-phrase-input">Shared Secure Phrase</label>
             <div class="secret-input-wrapper">
-              <input type="password" id="secret-phrase-input" placeholder="e.g. tumhara pet name, koi secret..." maxlength="50" autocomplete="off" spellcheck="false">
+              <input type="password" id="secret-phrase-input" placeholder="Enter matching secure phrase..." maxlength="50" autocomplete="off" spellcheck="false">
               <button id="toggle-secret-visibility" class="icon-btn small" title="Show/Hide" type="button">
                 <svg id="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
             </div>
           </div>
           <button id="personal-connect-btn" class="btn btn-love">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
-            Connect Privately
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Establish Secure Peer Connection
           </button>
         </div>
 
@@ -213,7 +213,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
         </button>
         <input type="file" id="file-input" class="hidden" accept="image/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
-        <textarea id="message-input" placeholder="Type a message..." rows="1" maxlength="5000" disabled></textarea>
+        <textarea id="message-input" placeholder="Type a message..." rows="1" maxlength="5000" disabled inputmode="text" enterkeyhint="send"></textarea>
         <button id="view-once-btn" class="view-once-button" disabled title="Toggle View Once Message">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>

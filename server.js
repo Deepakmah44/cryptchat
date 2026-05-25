@@ -205,6 +205,41 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'edit-message': {
+        // Update the stored message with new encrypted content
+        const allMessages = loadMessages();
+        const msgIndex = allMessages.findIndex(m => m.roomCode === currentRoom && m.messageId === msg.messageId && m.from === currentUser.id);
+        if (msgIndex !== -1) {
+          allMessages[msgIndex].iv = msg.iv;
+          allMessages[msgIndex].ciphertext = msg.ciphertext;
+          allMessages[msgIndex].edited = true;
+          saveMessages(allMessages);
+        }
+        // Broadcast edit to peer
+        broadcastToRoom(currentRoom, {
+          type: 'edit-message',
+          messageId: msg.messageId,
+          iv: msg.iv,
+          ciphertext: msg.ciphertext,
+          fromUsername: currentUser.username
+        }, ws);
+        break;
+      }
+
+      case 'unsend-message': {
+        // Delete from stored messages
+        const allMessages = loadMessages();
+        const updatedMessages = allMessages.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId && m.from === currentUser.id));
+        saveMessages(updatedMessages);
+        // Broadcast unsend to peer
+        broadcastToRoom(currentRoom, {
+          type: 'unsend-message',
+          messageId: msg.messageId,
+          fromUsername: currentUser.username
+        }, ws);
+        break;
+      }
+
       case 'call-invite':
       case 'call-accept':
       case 'call-decline':

@@ -25,6 +25,10 @@ const state = {
   unreadReceivedMsgs: [],
   secretPhrase: null,
 
+  // Edit State
+  editingMessageId: null,
+  editingOriginalText: null,
+
   // Call State Variables
   localStream: null,
   remoteStream: null,
@@ -132,9 +136,11 @@ function initParticles() {
       this.x = Math.random() * canvas.width;
       this.y = Math.random() * canvas.height;
       this.size = Math.random() * 1.5 + 0.5;
-      this.speedX = (Math.random() - 0.5) * 0.3;
-      this.speedY = (Math.random() - 0.5) * 0.3;
-      this.opacity = Math.random() * 0.4 + 0.1;
+      this.speedX = (Math.random() - 0.5) * 0.25;
+      this.speedY = (Math.random() - 0.5) * 0.25;
+      this.opacity = Math.random() * 0.35 + 0.15;
+      // Professional theme: elegant slate-grey and secure corporate blue
+      this.color = Math.random() > 0.5 ? '100, 116, 139' : '37, 99, 235';
     }
     update() {
       this.x += this.speedX;
@@ -145,30 +151,49 @@ function initParticles() {
     draw() {
       ctx.beginPath();
       ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(0, 212, 255, ${this.opacity})`;
+      ctx.fillStyle = `rgba(${this.color}, ${this.opacity})`;
       ctx.fill();
     }
   }
 
-  // Fewer particles on mobile for performance
-  const count = window.innerWidth < 768 ? 30 : 60;
+  // Fewer particles on mobile for ultra performance (16 particles)
+  const isMobile = window.innerWidth < 768;
+  const count = isMobile ? 16 : 65;
   particles = Array.from({ length: count }, () => new Particle());
 
   function animate() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    particles.forEach(p => { p.update(); p.draw(); });
+    
+    // Update and draw particles in a single pass
+    particles.forEach(p => { 
+      p.update(); 
+      p.draw(); 
+    });
 
-    // Draw connections
+    // Draw lines only between close particles
+    // On mobile, reduce connection distance to keep it clean and fast
+    const maxDist = isMobile ? 85 : 120;
+    const maxDistSq = maxDist * maxDist;
+
     for (let i = 0; i < particles.length; i++) {
+      const pi = particles[i];
       for (let j = i + 1; j < particles.length; j++) {
-        const dx = particles[i].x - particles[j].x;
-        const dy = particles[i].y - particles[j].y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 120) {
+        const pj = particles[j];
+        const dx = pi.x - pj.x;
+        const dy = pi.y - pj.y;
+        
+        // Fast box check first
+        if (Math.abs(dx) > maxDist || Math.abs(dy) > maxDist) continue;
+        
+        // Fast squared distance check to avoid heavy square root calculations
+        const distSq = dx * dx + dy * dy;
+        if (distSq < maxDistSq) {
+          const dist = Math.sqrt(distSq);
           ctx.beginPath();
-          ctx.moveTo(particles[i].x, particles[i].y);
-          ctx.lineTo(particles[j].x, particles[j].y);
-          ctx.strokeStyle = `rgba(0, 212, 255, ${0.06 * (1 - dist / 120)})`;
+          ctx.moveTo(pi.x, pi.y);
+          ctx.lineTo(pj.x, pj.y);
+          // Subtle glowing connection
+          ctx.strokeStyle = `rgba(0, 212, 255, ${0.08 * (1 - dist / maxDist)})`;
           ctx.lineWidth = 0.5;
           ctx.stroke();
         }
@@ -332,6 +357,14 @@ async function handleServerMessage(msg) {
       markMessageRead(msg.messageId);
       break;
 
+    case 'edit-message':
+      await handleEditMessage(msg);
+      break;
+
+    case 'unsend-message':
+      handleUnsendMessage(msg);
+      break;
+
     case 'call-invite':
       handleIncomingCall(msg);
       break;
@@ -424,6 +457,46 @@ async function sendMessage() {
   const text = dom.messageInput.value.trim();
   if (!text || !state.isEncrypted) return;
 
+  // ── EDIT MODE: Update existing message ──
+  if (state.editingMessageId) {
+    try {
+      const { iv, ciphertext } = await state.crypto.encrypt(text);
+      send({
+        type: 'edit-message',
+        messageId: state.editingMessageId,
+        iv,
+        ciphertext
+      });
+      // Update locally
+      const wrapper = document.querySelector(`[data-message-id="${state.editingMessageId}"]`);
+      if (wrapper) {
+        const bubble = wrapper.querySelector('.message-bubble');
+        if (bubble) {
+          bubble.innerHTML = escapeHtml(text);
+        }
+        // Add edited tag if not present
+        const meta = wrapper.querySelector('.message-meta');
+        if (meta && !meta.querySelector('.edited-tag')) {
+          const editTag = document.createElement('span');
+          editTag.className = 'edited-tag';
+          editTag.textContent = '(edited)';
+          meta.insertBefore(editTag, meta.firstChild);
+        }
+      }
+      cancelEditMode();
+      dom.messageInput.value = '';
+      dom.messageInput.style.height = 'auto';
+      // Keep keyboard open on mobile
+      setTimeout(() => dom.messageInput.focus(), 50);
+      return;
+    } catch (err) {
+      console.error('Edit encryption failed:', err);
+      addSystemNotice('⚠️ Failed to edit message.');
+      return;
+    }
+  }
+
+  // ── NORMAL SEND ──
   const messageId = `${state.userId}-${++state.messageIdCounter}`;
   const isViewOnce = state.viewOnceActive;
 
@@ -456,6 +529,8 @@ async function sendMessage() {
     dom.messageInput.value = '';
     dom.messageInput.style.height = 'auto';
     sendTypingStatus(false);
+    // Keep keyboard open on mobile after sending
+    setTimeout(() => dom.messageInput.focus(), 50);
   } catch (err) {
     console.error('Encryption failed:', err);
     addSystemNotice('⚠️ Failed to encrypt message.');
@@ -670,6 +745,28 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
     }
   }
 
+  // Attach context menu for sent text messages (not view-once, not file)
+  if (isSent && !isViewOnce && !file && messageId) {
+    const bubble = wrapper.querySelector('.message-bubble');
+    if (bubble) {
+      // Long press for mobile
+      let longPressTimer;
+      bubble.addEventListener('touchstart', (e) => {
+        longPressTimer = setTimeout(() => {
+          e.preventDefault();
+          showContextMenu(e.touches[0].clientX, e.touches[0].clientY, messageId, text);
+        }, 500);
+      }, { passive: false });
+      bubble.addEventListener('touchend', () => clearTimeout(longPressTimer));
+      bubble.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+      // Right-click for desktop
+      bubble.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY, messageId, text);
+      });
+    }
+  }
+
   dom.messagesList.appendChild(wrapper);
   scrollToBottom();
 }
@@ -814,6 +911,165 @@ function scrollToBottom() {
 }
 
 // ═══════════════════════════════════════════
+// CONTEXT MENU — EDIT & UNSEND
+// ═══════════════════════════════════════════
+function showContextMenu(x, y, messageId, messageText) {
+  closeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'msg-context-menu';
+  menu.id = 'active-context-menu';
+  menu.innerHTML = `
+    <button class="ctx-item" data-action="edit">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      Edit
+    </button>
+    <div class="ctx-divider"></div>
+    <button class="ctx-item danger" data-action="unsend">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+      Unsend
+    </button>
+  `;
+
+  // Position menu, keep within viewport
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  let posX = Math.min(x, window.innerWidth - rect.width - 10);
+  let posY = Math.min(y, window.innerHeight - rect.height - 10);
+  posX = Math.max(10, posX);
+  posY = Math.max(10, posY);
+  menu.style.left = posX + 'px';
+  menu.style.top = posY + 'px';
+
+  // Handle clicks
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('.ctx-item');
+    if (!item) return;
+    const action = item.dataset.action;
+    if (action === 'edit') {
+      enterEditMode(messageId, messageText);
+    } else if (action === 'unsend') {
+      unsendMessage(messageId);
+    }
+    closeContextMenu();
+  });
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('click', closeContextMenuOnOutside);
+    document.addEventListener('touchstart', closeContextMenuOnOutside);
+  }, 10);
+}
+
+function closeContextMenuOnOutside(e) {
+  const menu = document.getElementById('active-context-menu');
+  if (menu && !menu.contains(e.target)) {
+    closeContextMenu();
+  }
+}
+
+function closeContextMenu() {
+  const menu = document.getElementById('active-context-menu');
+  if (menu) menu.remove();
+  document.removeEventListener('click', closeContextMenuOnOutside);
+  document.removeEventListener('touchstart', closeContextMenuOnOutside);
+}
+
+function enterEditMode(messageId, originalText) {
+  state.editingMessageId = messageId;
+  state.editingOriginalText = originalText;
+  dom.messageInput.value = originalText;
+  dom.messageInput.focus();
+  dom.messageInput.style.height = 'auto';
+  dom.messageInput.style.height = Math.min(dom.messageInput.scrollHeight, 140) + 'px';
+
+  // Show edit mode bar
+  let editBar = document.getElementById('edit-mode-bar');
+  if (!editBar) {
+    editBar = document.createElement('div');
+    editBar.className = 'edit-mode-bar';
+    editBar.id = 'edit-mode-bar';
+    editBar.innerHTML = `
+      <span class="edit-label">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Editing message
+      </span>
+      <button class="edit-cancel-btn" id="edit-cancel-btn">Cancel</button>
+    `;
+    const inputBar = document.querySelector('.chat-input-bar');
+    inputBar.insertBefore(editBar, inputBar.firstChild);
+    document.getElementById('edit-cancel-btn').addEventListener('click', cancelEditMode);
+  }
+}
+
+function cancelEditMode() {
+  state.editingMessageId = null;
+  state.editingOriginalText = null;
+  dom.messageInput.value = '';
+  dom.messageInput.style.height = 'auto';
+  const editBar = document.getElementById('edit-mode-bar');
+  if (editBar) editBar.remove();
+}
+
+async function unsendMessage(messageId) {
+  send({ type: 'unsend-message', messageId });
+  // Update locally
+  const wrapper = document.querySelector(`[data-message-id="${messageId}"]`);
+  if (wrapper) {
+    const bubble = wrapper.querySelector('.message-bubble');
+    if (bubble) {
+      bubble.className = 'message-bubble unsent-message';
+      bubble.innerHTML = `<span>🚫</span> You unsent this message`;
+    }
+    // Remove status indicators
+    const meta = wrapper.querySelector('.message-meta');
+    if (meta) {
+      const status = meta.querySelector('.message-status');
+      if (status) status.remove();
+    }
+  }
+}
+
+async function handleEditMessage(msg) {
+  try {
+    const plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
+    const wrapper = document.querySelector(`[data-message-id="${msg.messageId}"]`);
+    if (wrapper) {
+      const bubble = wrapper.querySelector('.message-bubble');
+      if (bubble) {
+        bubble.innerHTML = escapeHtml(plaintext);
+      }
+      const meta = wrapper.querySelector('.message-meta');
+      if (meta && !meta.querySelector('.edited-tag')) {
+        const editTag = document.createElement('span');
+        editTag.className = 'edited-tag';
+        editTag.textContent = '(edited)';
+        meta.insertBefore(editTag, meta.firstChild);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to decrypt edited message:', err);
+  }
+}
+
+function handleUnsendMessage(msg) {
+  const wrapper = document.querySelector(`[data-message-id="${msg.messageId}"]`);
+  if (wrapper) {
+    const bubble = wrapper.querySelector('.message-bubble');
+    if (bubble) {
+      bubble.className = 'message-bubble unsent-message';
+      bubble.innerHTML = `<span>🚫</span> ${escapeHtml(msg.fromUsername)} unsent this message`;
+    }
+    const meta = wrapper.querySelector('.message-meta');
+    if (meta) {
+      const status = meta.querySelector('.message-status');
+      if (status) status.remove();
+      const editTag = meta.querySelector('.edited-tag');
+      if (editTag) editTag.remove();
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
 // UI — SCREEN MANAGEMENT
 // ═══════════════════════════════════════════
 function switchToChat() {
@@ -834,6 +1090,13 @@ function switchToJoin() {
   state.crypto = new CryptoEngine();
   state.viewOnceActive = false;
   state.incomingSnaps.clear();
+  // Reset edit state
+  state.editingMessageId = null;
+  state.editingOriginalText = null;
+  const editBar = document.getElementById('edit-mode-bar');
+  if (editBar) editBar.remove();
+  // Close context menu if open
+  closeContextMenu();
   if (dom.viewOnceBtn) {
     dom.viewOnceBtn.classList.remove('active');
   }
@@ -1457,8 +1720,18 @@ function handleCallHangup() {
 
 async function setupWebRTC() {
   const constraints = {
-    audio: true,
-    video: state.callType === 'video'
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      sampleRate: 48000
+    },
+    video: state.callType === 'video' ? {
+      width: { ideal: 1280, min: 640 },
+      height: { ideal: 720, min: 480 },
+      frameRate: { ideal: 30, min: 15 },
+      facingMode: 'user'
+    } : false
   };
 
   try {
@@ -1477,7 +1750,11 @@ async function setupWebRTC() {
   }
 
   const config = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' }
+    ]
   };
   
   state.peerConnection = new RTCPeerConnection(config);
