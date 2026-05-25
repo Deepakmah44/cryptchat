@@ -1,0 +1,16 @@
+# Exclude local dependency folder
+node_modules/
+
+# Exclude local transient message persistence database
+messages.json
+
+# Exclude git repository data
+.git/
+.gitignore
+
+# Exclude npm log directories
+npm-debug.log*
+
+# Exclude system folders
+.DS_Store
+Thumbs.db
