@@ -282,6 +282,11 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'ping': {
+        ws.send(JSON.stringify({ type: 'pong' }));
+        break;
+      }
+
       case 'call-invite':
       case 'call-accept':
       case 'call-decline':

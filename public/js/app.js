@@ -88,6 +88,7 @@ const dom = {
   callOverlay: $('#call-overlay'),
   videoGrid: $('#video-grid'),
   remoteVideo: $('#remote-video'),
+  remoteAudio: $('#remote-audio'),
   localVideo: $('#local-video'),
   localVideoPlaceholder: $('#local-video-placeholder'),
   audioCallUi: $('#audio-call-ui'),
@@ -215,6 +216,35 @@ function getWsUrl() {
   return `${protocol}//${location.host}`;
 }
 
+let heartbeatInterval = null;
+function startHeartbeat() {
+  stopHeartbeat();
+  let lastPong = Date.now();
+  
+  heartbeatInterval = setInterval(() => {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      send({ type: 'ping' });
+      
+      // If we haven't received a pong in 35 seconds, connection is dead
+      if (Date.now() - lastPong > 35000) {
+        console.warn('WebSocket heartbeat timeout. Reconnecting...');
+        state.ws.close(); // Triggers onclose and reconnection automatically
+      }
+    }
+  }, 15000); // Ping every 15 seconds
+  
+  state._heartbeatReset = () => {
+    lastPong = Date.now();
+  };
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
 function connectWebSocket() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(getWsUrl());
@@ -223,6 +253,7 @@ function connectWebSocket() {
       state.ws = ws;
       state.isConnected = true;
       state.reconnectAttempts = 0;
+      startHeartbeat();
       resolve(ws);
     };
 
@@ -233,6 +264,7 @@ function connectWebSocket() {
 
     ws.onclose = () => {
       state.isConnected = false;
+      stopHeartbeat();
       if (state.roomCode) {
         updateConnectionStatus('offline', 'Disconnected');
         attemptReconnect();
@@ -240,6 +272,7 @@ function connectWebSocket() {
     };
 
     ws.onerror = () => {
+      stopHeartbeat();
       reject(new Error('WebSocket connection failed'));
     };
   });
@@ -310,6 +343,11 @@ async function handleServerMessage(msg) {
         break;
       }
 
+      // Reset old crypto states completely before initiating a fresh session key exchange
+      state.crypto = new CryptoEngine();
+      state.isEncrypted = false;
+      updateEncryptionStatus(false);
+
       if (msg.roomCode.startsWith('P')) {
         dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
         updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
@@ -337,6 +375,10 @@ async function handleServerMessage(msg) {
       updateConnectionStatus('online', 'Online');
       addSystemNotice(`${msg.peerUsername} joined the room`);
       if (!state.roomCode.startsWith('P')) {
+        // Reset old crypto states completely before initiating a fresh key exchange session
+        state.crypto = new CryptoEngine();
+        state.isEncrypted = false;
+        updateEncryptionStatus(false);
         await initiateKeyExchange();
       }
       break;
@@ -353,6 +395,12 @@ async function handleServerMessage(msg) {
 
     case 'encrypted-message':
       await handleEncryptedMessage(msg);
+      break;
+
+    case 'pong':
+      if (state._heartbeatReset) {
+        state._heartbeatReset();
+      }
       break;
 
     case 'typing':
@@ -949,9 +997,19 @@ function adjustChatViewport() {
   const chatScreen = document.getElementById('chat-screen');
   if (chatScreen && chatScreen.classList.contains('active')) {
     if (window.visualViewport) {
-      chatScreen.style.height = `${window.visualViewport.height}px`;
+      const height = window.visualViewport.height;
+      const offsetTop = window.visualViewport.offsetTop;
+      
+      chatScreen.style.height = `${height}px`;
+      chatScreen.style.top = `${offsetTop}px`;
+      
+      // Clear out document double-bouncing offsets
+      window.scrollTo(0, 0);
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
     } else {
       chatScreen.style.height = '100dvh';
+      chatScreen.style.top = '0px';
     }
   }
 }
@@ -1446,6 +1504,13 @@ function initEventListeners() {
     }
   });
 
+  dom.messageInput.addEventListener('focus', () => {
+    setTimeout(() => {
+      adjustChatViewport();
+      scrollToBottom();
+    }, 80);
+  });
+
   // View Once Toggle
   dom.viewOnceBtn.addEventListener('click', () => {
     state.viewOnceActive = !state.viewOnceActive;
@@ -1845,7 +1910,23 @@ async function setupWebRTC() {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' }
+      { urls: 'stun:stun2.l.google.com:19302' },
+      // Public TURN servers to bypass symmetric cellular/Wi-Fi firewalls
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ]
   };
   
@@ -1863,7 +1944,6 @@ async function setupWebRTC() {
   state.peerConnection.ontrack = (event) => {
     if (!state.remoteStream) {
       state.remoteStream = new MediaStream();
-      dom.remoteVideo.srcObject = state.remoteStream;
     }
     event.streams[0].getTracks().forEach(track => {
       state.remoteStream.addTrack(track);
@@ -1877,8 +1957,8 @@ async function setupWebRTC() {
     // Start active call timer display
     startCallTimer();
 
-    // Apply default audio routing (Earpiece for audio, Speaker for video)
-    applyDefaultAudioRouting();
+    // Apply absolute audio routing (Earpiece for audio, Speaker for video)
+    applyAudioRouting();
   };
 
   state.localStream.getTracks().forEach(track => {
@@ -1955,124 +2035,98 @@ function toggleVideo() {
 }
 
 async function toggleLoudspeaker() {
-  const targetElement = dom.remoteVideo;
-  if (!targetElement) return;
+  if (!state.remoteStream) return;
 
-  if (typeof targetElement.setSinkId !== 'function') {
-    addCallSystemNotice('⚠️ Browser does not support switching audio output devices.', true);
-    return;
+  // Toggle state
+  if (state.speakerMode === 'speaker') {
+    state.speakerMode = 'earpiece';
+  } else {
+    state.speakerMode = 'speaker';
   }
 
-  try {
-    // If browser supports modern selectAudioOutput, we can use it to let user manually choose high-quality output
-    if (navigator.mediaDevices.selectAudioOutput) {
-      try {
-        const device = await navigator.mediaDevices.selectAudioOutput();
-        await targetElement.setSinkId(device.deviceId);
-        
-        const isSpeaker = device.label.toLowerCase().includes('speaker') || 
-                          device.label.toLowerCase().includes('loudspeaker') || 
-                          device.label.toLowerCase().includes('external');
-        
-        state.speakerMode = isSpeaker ? 'speaker' : 'earpiece';
-        dom.callSpeakerBtn.classList.toggle('active', isSpeaker);
-        dom.callSpeakerBtn.title = isSpeaker ? 'Switch to Earpiece' : 'Switch to Loudspeaker';
-        
-        addCallSystemNotice(isSpeaker ? '🔊 Switched to Loudspeaker' : '🔇 Switched to Earpiece', false);
-        return;
-      } catch (e) {
-        // user cancelled or selectAudioOutput failed, we fall back to manual programmatic toggle below
-        console.log('selectAudioOutput prompt cancelled/failed, using automatic switch fallback.');
-      }
-    }
-
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-
-    if (audioOutputs.length === 0) {
-      addCallSystemNotice('⚠️ No audio output devices found.', true);
-      return;
-    }
-
-    // Toggle speaker Mode
-    if (state.speakerMode === 'speaker') {
-      // Find earpiece / default handset receiver
-      const earpiece = audioOutputs.find(d => 
-        d.label.toLowerCase().includes('earpiece') || 
-        d.label.toLowerCase().includes('receiver') || 
-        d.label.toLowerCase().includes('handset') ||
-        d.label.toLowerCase().includes('phone')
-      ) || audioOutputs[0]; // fallback to first device
-
-      await targetElement.setSinkId(earpiece.deviceId);
-      state.speakerMode = 'earpiece';
-      dom.callSpeakerBtn.classList.remove('active');
-      dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
-      addCallSystemNotice('🔇 Switched to Earpiece (Normal Sound)', false);
-    } else {
-      // Find speakerphone / loudspeaker
-      const speaker = audioOutputs.find(d => 
-        d.label.toLowerCase().includes('speaker') || 
-        d.label.toLowerCase().includes('loudspeaker') ||
-        d.label.toLowerCase().includes('external')
-      ) || audioOutputs[audioOutputs.length - 1]; // fallback to last device
-
-      await targetElement.setSinkId(speaker.deviceId);
-      state.speakerMode = 'speaker';
-      dom.callSpeakerBtn.classList.add('active');
-      dom.callSpeakerBtn.title = 'Switch to Earpiece';
-      addCallSystemNotice('🔊 Switched to Loudspeaker', false);
-    }
-  } catch (err) {
-    console.error('Audio routing failed:', err);
-    addCallSystemNotice('⚠️ Failed to switch audio output.', true);
-  }
+  // Apply real-time physical track routing
+  applyAudioRouting();
 }
 
-async function applyDefaultAudioRouting() {
-  const targetElement = dom.remoteVideo;
-  if (!targetElement) return;
+function applyAudioRouting() {
+  if (!state.remoteStream) return;
 
-  if (typeof targetElement.setSinkId !== 'function') {
-    console.warn('setSinkId is not supported in this browser.');
-    return;
-  }
+  const audioTracks = state.remoteStream.getAudioTracks();
+  if (audioTracks.length === 0) return;
 
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-    if (audioOutputs.length === 0) return;
+  // Stop current active sources to prevent duplicates
+  dom.remoteVideo.srcObject = null;
+  dom.remoteAudio.srcObject = null;
 
-    if (state.callType === 'audio') {
-      // Find earpiece / default handset receiver
-      const earpiece = audioOutputs.find(d => 
-        d.label.toLowerCase().includes('earpiece') || 
-        d.label.toLowerCase().includes('receiver') || 
-        d.label.toLowerCase().includes('handset') ||
-        d.label.toLowerCase().includes('phone')
-      ) || audioOutputs[0]; // fallback to first device
+  if (state.speakerMode === 'speaker') {
+    // ROUTE TO LOUDSPEAKER (External Speaker):
+    // Play full stream (including audio) through <video> element
+    dom.remoteVideo.srcObject = state.remoteStream;
+    dom.remoteVideo.muted = false;
+    
+    // De-activate hidden audio element
+    dom.remoteAudio.srcObject = null;
+    
+    dom.callSpeakerBtn.classList.add('active');
+    dom.callSpeakerBtn.title = 'Switch to Earpiece';
+    addCallSystemNotice('🔊 Switched to Loudspeaker', false);
 
-      await targetElement.setSinkId(earpiece.deviceId);
-      state.speakerMode = 'earpiece';
-      dom.callSpeakerBtn.classList.remove('active');
-      dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
-      addCallSystemNotice('🔇 Sound routed to Earpiece', false);
+    // Dynamic setSinkId fallback for Android/Chrome
+    try {
+      if (typeof dom.remoteVideo.setSinkId === 'function') {
+        navigator.mediaDevices.enumerateDevices().then(devices => {
+          const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+          const speaker = audioOutputs.find(d => 
+            d.label.toLowerCase().includes('speaker') || 
+            d.label.toLowerCase().includes('loudspeaker') ||
+            d.label.toLowerCase().includes('external')
+          );
+          if (speaker) {
+            dom.remoteVideo.setSinkId(speaker.deviceId);
+          }
+        });
+      }
+    } catch (e) {}
+  } else {
+    // ROUTE TO EARPIECE (Handset Receiver):
+    // Play audio tracks exclusively through <audio> element to trigger mobile hardware routing
+    const audioOnlyStream = new MediaStream(audioTracks);
+    dom.remoteAudio.srcObject = audioOnlyStream;
+    dom.remoteAudio.muted = false;
+
+    // For video calls, keep video tracks rendering inside <video> but MUTED!
+    if (state.callType === 'video') {
+      const videoTracks = state.remoteStream.getVideoTracks();
+      if (videoTracks.length > 0) {
+        const videoOnlyStream = new MediaStream(videoTracks);
+        dom.remoteVideo.srcObject = videoOnlyStream;
+        dom.remoteVideo.muted = true; // MUST mute video element to force OS earpiece routing
+      }
     } else {
-      // Find speakerphone / loudspeaker
-      const speaker = audioOutputs.find(d => 
-        d.label.toLowerCase().includes('speaker') || 
-        d.label.toLowerCase().includes('loudspeaker') ||
-        d.label.toLowerCase().includes('external')
-      ) || audioOutputs[audioOutputs.length - 1]; // fallback to last device
-
-      await targetElement.setSinkId(speaker.deviceId);
-      state.speakerMode = 'speaker';
-      dom.callSpeakerBtn.classList.add('active');
-      dom.callSpeakerBtn.title = 'Switch to Earpiece';
-      addCallSystemNotice('🔊 Sound routed to Loudspeaker', false);
+      dom.remoteVideo.srcObject = null;
     }
-  } catch (err) {
-    console.error('Failed to set default audio routing:', err);
+
+    dom.callSpeakerBtn.classList.remove('active');
+    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+    addCallSystemNotice('🔇 Switched to Earpiece (Normal Sound)', false);
+
+    // Dynamic setSinkId fallback for handset earpiece
+    try {
+      if (typeof dom.remoteAudio.setSinkId === 'function') {
+        navigator.mediaDevices.enumerateDevices().then(devices => {
+          const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+          const earpiece = audioOutputs.find(d => 
+            d.label.toLowerCase().includes('earpiece') || 
+            d.label.toLowerCase().includes('receiver') || 
+            d.label.toLowerCase().includes('handset') ||
+            d.label.toLowerCase().includes('phone')
+          );
+          if (earpiece) {
+            dom.remoteAudio.setSinkId(earpiece.deviceId);
+          }
+        });
+      }
+    } catch (e) {}
   }
 }
 
@@ -2123,6 +2177,7 @@ function resetCallUI() {
   state.remoteStream = null;
   dom.localVideo.srcObject = null;
   dom.remoteVideo.srcObject = null;
+  dom.remoteAudio.srcObject = null;
   
   if (dom.localVideoPlaceholder) {
     dom.localVideoPlaceholder.classList.add('hidden');
