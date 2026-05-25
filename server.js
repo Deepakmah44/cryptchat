@@ -128,11 +128,6 @@ wss.on('connection', (ws) => {
             type: 'peer-joined',
             peerUsername: currentUser.username
           }));
-          // Also update current user UI with peer info
-          ws.send(JSON.stringify({
-            type: 'peer-joined',
-            peerUsername: peer.username
-          }));
         }
         break;
       }

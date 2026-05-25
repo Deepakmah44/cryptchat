@@ -256,6 +256,7 @@ async function handleServerMessage(msg) {
         dom.chatPeerName.textContent = 'Waiting for peer...';
         updateConnectionStatus('waiting', 'Room ready. Share the secret phrase.');
         await state.crypto.deriveKeyFromSecret(state.secretPhrase, msg.roomCode);
+        state.isEncrypted = true;
         updateEncryptionStatus(true);
         enableInput();
         addSystemNotice('🔒 End-to-end encryption activated (derived from secret phrase)');
@@ -279,6 +280,7 @@ async function handleServerMessage(msg) {
           addSystemNotice('Room ready. Waiting for peer to connect.');
         }
         await state.crypto.deriveKeyFromSecret(state.secretPhrase, msg.roomCode);
+        state.isEncrypted = true;
         updateEncryptionStatus(true);
         enableInput();
         addSystemNotice('🔒 End-to-end encryption activated (derived from secret phrase)');
@@ -1684,6 +1686,17 @@ async function sendEncryptedFile(file) {
 function init() {
   initParticles();
   initEventListeners();
+  
+  // E2EE secure context check
+  const hasCrypto = !!(window.crypto && window.crypto.subtle);
+  const isSecure = window.isSecureContext !== false;
+  if (!hasCrypto || !isSecure) {
+    const warningEl = document.getElementById('secure-context-warning');
+    if (warningEl) {
+      warningEl.innerHTML = `⚠️ <strong>Security Restriction:</strong> Browser has disabled encryption APIs on this address. E2EE requires a secure context (HTTPS or localhost). Please open using <strong>http://localhost:3000</strong> or connect via HTTPS.`;
+      warningEl.classList.remove('hidden');
+    }
+  }
   
   // Safe unload alert to prevent accidental deletion on reload
   window.addEventListener('beforeunload', (e) => {
