@@ -12,9 +12,9 @@
 
 :root {
   /* Colors - Sleek Enterprise Slate & Cobalt Theme */
-  --bg-primary: #090d16;
-  --bg-secondary: #0f172a;
-  --bg-tertiary: #1e293b;
+  --bg-primary: #090d16; /* Deep slate navy chat area */
+  --bg-secondary: #0f172a; /* Slate gray headers/inputs */
+  --bg-tertiary: #1e293b; /* Sidebar/deep dark background */
   
   --glass-bg: rgba(255, 255, 255, 0.02);
   --glass-bg-hover: rgba(255, 255, 255, 0.05);
@@ -27,16 +27,20 @@
   --accent-gradient-hover: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
   --accent-glow: 0 4px 20px rgba(37, 99, 235, 0.15);
   
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-tertiary: #64748b;
-  --text-accent: #38bdf8; /* Soft Sky Blue accent */
+  --text-primary: #f8fafc; /* Crisp professional white text */
+  --text-secondary: #94a3b8; /* Slate gray muted text */
+  --text-tertiary: #64748b; /* Dark steel gray */
+  --text-accent: #38bdf8; /* Soft Sky Blue (ticks/mentions) */
   
   --success: #10b981;
   --success-bg: rgba(16, 185, 129, 0.08);
   --error: #ef4444;
   --error-bg: rgba(239, 68, 68, 0.08);
   --warning: #f59e0b;
+  
+  /* Message bubbles specific colors */
+  --bubble-sent-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.22) 0%, rgba(79, 70, 229, 0.22) 100%);
+  --bubble-received-bg: rgba(255, 255, 255, 0.04);
   
   /* Spacing */
   --space-xs: 4px;
@@ -67,17 +71,21 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-html {
-  font-size: 16px;
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
   -webkit-text-size-adjust: 100%;
 }
 
 body {
   font-family: var(--font-sans);
-  background: radial-gradient(circle at 50% 0%, #0f172a 0%, #090d16 100%);
+  background: var(--bg-primary);
   color: var(--text-primary);
-  min-height: 100dvh;
-  overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -101,6 +109,20 @@ body {
   display: flex;
   animation: screenTransition 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
   will-change: transform, opacity;
+}
+
+#chat-screen {
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+#chat-screen.active {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
+  width: 100%;
 }
 
 /* ═══════════════════════════════════════════
@@ -198,32 +220,28 @@ body {
 
 /* Glass Card */
 .glass-card {
-  background: rgba(15, 23, 42, 0.55);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(32, 44, 51, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: var(--radius-lg);
   padding: var(--space-lg);
   width: 100%;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35), 0 0 30px rgba(37, 99, 235, 0.02);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 30px rgba(0, 168, 132, 0.02);
   transition: border-color var(--transition-base), box-shadow var(--transition-base);
 }
 .glass-card:hover {
-  border-color: rgba(37, 99, 235, 0.2);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 30px rgba(37, 99, 235, 0.05);
+  border-color: rgba(0, 168, 132, 0.2);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45), 0 0 30px rgba(0, 168, 132, 0.06);
 }
 
 .glass-surface {
-  background: rgba(15, 23, 42, 0.88);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
 }
 @media (max-width: 768px) {
   .glass-surface {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
-    background: rgba(15, 23, 42, 0.97) !important;
+    background: var(--bg-secondary) !important;
   }
 }
 
@@ -252,8 +270,8 @@ input[type="text"],
 textarea {
   width: 100%;
   padding: 13px 18px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(17, 27, 33, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -267,8 +285,8 @@ input[type="text"]:focus,
 input[type="password"]:focus,
 textarea:focus {
   border-color: var(--accent-cyan);
-  box-shadow: 0 0 0 1px var(--accent-cyan), 0 0 12px rgba(37, 99, 235, 0.2);
-  background: rgba(37, 99, 235, 0.03);
+  box-shadow: 0 0 0 1px var(--accent-cyan);
+  background: rgba(0, 168, 132, 0.02);
 }
 
 input[type="text"]::placeholder,
@@ -300,10 +318,10 @@ textarea::placeholder {
 .join-tabs {
   display: flex;
   gap: 6px;
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(17, 27, 33, 0.8);
   border-radius: var(--radius-md);
   padding: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .tab-btn {
@@ -330,13 +348,13 @@ textarea::placeholder {
 }
 
 .tab-btn.active {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text-primary);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .tab-btn.active[data-tab="personal"] {
-  color: var(--text-accent);
+  color: var(--accent-cyan);
 }
 
 .tab-content {
@@ -391,10 +409,10 @@ textarea::placeholder {
 
 /* Love button */
 .btn-love {
-  background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+  background: var(--accent-gradient);
   color: #fff;
   width: 100%;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.2);
+  box-shadow: var(--accent-glow);
   position: relative;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -404,7 +422,7 @@ textarea::placeholder {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, transparent 50%);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, transparent 50%);
   opacity: 0;
   transition: opacity var(--transition-fast);
 }
@@ -419,7 +437,7 @@ textarea::placeholder {
 }
 
 .btn-love:hover {
-  box-shadow: 0 4px 20px rgba(37, 99, 235, 0.35), 0 0 30px rgba(79, 70, 229, 0.15);
+  box-shadow: 0 4px 20px rgba(0, 168, 132, 0.35);
   transform: translateY(-1px);
 }
 .btn-love:hover::before {
@@ -443,8 +461,8 @@ textarea::placeholder {
 input[type="password"] {
   width: 100%;
   padding: 13px 18px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(17, 27, 33, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -476,24 +494,24 @@ input[type="password"] {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #00f0ff 0%, #7c3aed 100%);
+  background: var(--accent-gradient);
   color: #fff;
-  box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--accent-glow);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 .btn-primary::after {
   content: '';
   position: absolute;
   top: 0; left: -100%;
   width: 100%; height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
   transition: all 0.6s ease;
 }
 .btn-primary:hover::after {
   left: 100%;
 }
 .btn-primary:hover {
-  box-shadow: 0 0 25px rgba(0, 240, 255, 0.35), 0 0 40px rgba(124, 58, 237, 0.15);
+  box-shadow: 0 4px 20px rgba(0, 168, 132, 0.35);
   transform: translateY(-1px);
 }
 .btn-primary:active {
@@ -503,13 +521,13 @@ input[type="password"] {
 .btn-secondary {
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-primary);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.05);
   border-color: var(--accent-cyan);
   color: var(--accent-cyan);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.12);
+  box-shadow: 0 0 12px rgba(0, 168, 132, 0.1);
 }
 
 .room-actions {
@@ -605,14 +623,14 @@ input[type="password"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-md) var(--space-lg);
-  padding-top: calc(var(--space-md) + var(--safe-top));
-  min-height: 70px;
-  z-index: 10;
+  padding: 10px 16px;
+  padding-top: calc(10px + var(--safe-top));
+  min-height: 60px;
+  z-index: 100;
   position: relative;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(15, 23, 42, 0.88);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.15);
+  background: var(--bg-secondary);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   will-change: transform;
 }
 
@@ -747,12 +765,16 @@ input[type="password"] {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-md);
+  padding: 16px;
+  padding-bottom: 84px; /* Space for fixed chat-input-bar to scroll behind */
   display: flex;
   flex-direction: column;
   scroll-behavior: smooth;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  background-color: var(--bg-primary);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 0);
+  background-size: 20px 20px;
 }
 
 .messages-list {
@@ -765,53 +787,18 @@ input[type="password"] {
   align-self: center;
 }
 
-/* System Messages */
-.system-message {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: var(--space-md);
-  text-align: center;
-  animation: fadeIn 0.4s ease-out;
-}
-
-.system-message .system-icon {
-  font-size: 1.5rem;
-}
-
-.system-message p {
-  font-size: 0.78rem;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  max-width: 300px;
-}
-
-.system-notice {
-  display: flex;
-  justify-content: center;
-  padding: var(--space-xs) 0;
-}
-
-.system-notice span {
-  font-size: 0.72rem;
-  color: var(--text-tertiary);
-  background: var(--glass-bg);
-  padding: 4px 12px;
-  border-radius: var(--radius-full);
-}
-
 /* Chat Bubbles */
 .message-bubble {
-  padding: 12px 16px;
+  padding: 8px 12px 22px 12px; /* Bottom padding for floating timestamp + checkmarks */
   border-radius: var(--radius-lg);
   font-size: 0.95rem;
-  line-height: 1.6;
+  line-height: 1.5;
   word-wrap: break-word;
   word-break: break-word;
   position: relative;
+  min-width: 90px;
+  box-shadow: 0 1px 1.5px rgba(0, 0, 0, 0.2);
   transition: background var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
 
 .message-wrapper {
@@ -833,17 +820,46 @@ input[type="password"] {
 }
 
 .message-wrapper.sent .message-bubble {
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.22) 0%, rgba(79, 70, 229, 0.22) 100%);
+  background: var(--bubble-sent-bg);
   border: 1px solid rgba(37, 99, 235, 0.25);
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.04);
   border-bottom-right-radius: 4px;
 }
 
 .message-wrapper.received .message-bubble {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bubble-received-bg);
   border: 1px solid rgba(255, 255, 255, 0.07);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   border-bottom-left-radius: 4px;
+}
+
+/* WhatsApp Message Metadata (Timestamp + Ticks) */
+.message-meta-whatsapp {
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+  line-height: 1;
+}
+
+.message-time-whatsapp {
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.message-wrapper.received .message-time-whatsapp {
+  color: var(--text-secondary);
+}
+
+.message-status-whatsapp {
+  display: inline-flex;
+  color: rgba(255, 255, 255, 0.4);
+  align-items: center;
+}
+
+.message-status-whatsapp.read {
+  color: var(--text-accent) !important;
 }
 
 .message-meta {
@@ -906,11 +922,18 @@ input[type="password"] {
 .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
 
 .chat-input-bar {
-  padding: var(--space-md) var(--space-lg);
-  padding-bottom: calc(var(--space-md) + var(--safe-bottom));
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(15, 23, 42, 0.94);
-  z-index: 10;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 10px 16px;
+  padding-bottom: calc(10px + var(--safe-bottom));
+  background: var(--bg-secondary);
+  border-top: 1px solid rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  will-change: transform;
 }
 
 .input-wrapper {
@@ -1688,7 +1711,7 @@ input[type="password"] {
   width: 300px;
   padding: var(--space-md);
   z-index: 100;
-  background: rgba(15, 23, 42, 0.96);
+  background: var(--bg-secondary);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 15px 40px rgba(0, 0, 0, 0.6), 0 0 1px rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-lg);
@@ -1763,7 +1786,7 @@ input[type="password"] {
   position: fixed;
   z-index: 500;
   min-width: 170px;
-  background: rgba(15, 23, 42, 0.98);
+  background: var(--bg-secondary);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.08);

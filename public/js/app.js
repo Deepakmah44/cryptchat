@@ -683,6 +683,16 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
 
   const time = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+  // WhatsApp-compliant metadata block (nested inside bubbles)
+  let metaHtml = `<div class="message-meta-whatsapp">`;
+  metaHtml += `<span class="message-time-whatsapp">${time}</span>`;
+  if (isSent) {
+    metaHtml += `<span class="message-status message-status-whatsapp" data-mid="${messageId || ''}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </span>`;
+  }
+  metaHtml += `</div>`;
+
   let html = '';
   if (!isSent && senderName) {
     html += `<span class="sender-name">${escapeHtml(senderName)}</span>`;
@@ -690,9 +700,19 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
   
   if (isViewOnce) {
     if (isSent) {
-      html += `<div class="message-bubble view-once-sent"><span class="snap-icon">👁️</span> View Once ${file ? 'File' : 'Message'} Sent</div>`;
+      html += `
+        <div class="message-bubble view-once-sent">
+          <div class="message-text"><span class="snap-icon">👁️</span> View Once ${file ? 'File' : 'Message'} Sent</div>
+          ${metaHtml}
+        </div>
+      `;
     } else {
-      html += `<div class="message-bubble view-once-card"><span class="snap-icon">👁️</span> Tap to Reveal ${file ? 'File' : 'Message'}</div>`;
+      html += `
+        <div class="message-bubble view-once-card">
+          <div class="message-text"><span class="snap-icon">👁️</span> Tap to Reveal ${file ? 'File' : 'Message'}</div>
+          ${metaHtml}
+        </div>
+      `;
     }
   } else if (file) {
     let fileHtml = '';
@@ -715,19 +735,20 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
         </a>
       `;
     }
-    html += `<div class="message-bubble">${fileHtml}</div>`;
+    html += `
+      <div class="message-bubble">
+        <div class="message-text">${fileHtml}</div>
+        ${metaHtml}
+      </div>
+    `;
   } else {
-    html += `<div class="message-bubble">${escapeHtml(text)}</div>`;
+    html += `
+      <div class="message-bubble">
+        <div class="message-text">${escapeHtml(text)}</div>
+        ${metaHtml}
+      </div>
+    `;
   }
-
-  html += `<div class="message-meta">`;
-  html += `<span class="message-time">${time}</span>`;
-  if (isSent) {
-    html += `<span class="message-status" data-mid="${messageId || ''}">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-    </span>`;
-  }
-  html += `</div>`;
 
   wrapper.innerHTML = html;
 
@@ -910,6 +931,28 @@ function scrollToBottom() {
   });
 }
 
+function adjustChatViewport() {
+  const chatScreen = document.getElementById('chat-screen');
+  if (chatScreen && chatScreen.classList.contains('active')) {
+    if (window.visualViewport) {
+      chatScreen.style.height = `${window.visualViewport.height}px`;
+    } else {
+      chatScreen.style.height = '100dvh';
+    }
+  }
+}
+
+// Bind visualViewport resize & scroll events as soon as script starts
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    adjustChatViewport();
+    scrollToBottom();
+  });
+  window.visualViewport.addEventListener('scroll', () => {
+    adjustChatViewport();
+  });
+}
+
 // ═══════════════════════════════════════════
 // CONTEXT MENU — EDIT & UNSEND
 // ═══════════════════════════════════════════
@@ -1075,8 +1118,12 @@ function handleUnsendMessage(msg) {
 function switchToChat() {
   dom.joinScreen.classList.remove('active');
   dom.chatScreen.classList.add('active');
-  dom.chatScreen.style.animation = 'screenTransition 0.35s ease-out';
+  dom.chatScreen.style.animation = 'screenTransition 0.45s cubic-bezier(0.16, 1, 0.3, 1) both';
   dom.displayRoomCode.textContent = state.roomCode;
+  
+  // Auto-fit layout and scroll to bottom
+  adjustChatViewport();
+  setTimeout(scrollToBottom, 150);
 }
 
 function switchToJoin() {
