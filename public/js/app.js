@@ -38,6 +38,8 @@ const state = {
   ringtoneOscillators: [],
   audioCtx: null,
   callStartTime: null,
+  pendingWebRTCSignals: [],
+  callTimerInterval: null,
 };
 
 // ── DOM Refs ──
@@ -97,6 +99,7 @@ const dom = {
   callAcceptBtn: $('#call-accept-btn'),
   callMuteBtn: $('#call-mute-btn'),
   callVideoToggleBtn: $('#call-video-toggle-btn'),
+  callSpeakerBtn: $('#call-speaker-btn'),
   callHangupBtn: $('#call-hangup-btn'),
   // Emoji Picker DOM Refs
   emojiBtn: $('#emoji-btn'),
@@ -250,11 +253,12 @@ function attemptReconnect() {
   setTimeout(async () => {
     try {
       await connectWebSocket();
-      // Re-join the room
+      // Re-join the room with original userId to resume same session
       send({
         type: 'join-room',
         roomCode: state.roomCode,
-        username: state.username
+        username: state.username,
+        userId: state.userId
       });
     } catch {
       attemptReconnect();
@@ -296,6 +300,16 @@ async function handleServerMessage(msg) {
       state.userId = msg.userId;
       state.peerUsername = msg.peerUsername;
       switchToChat();
+      
+      if (msg.resumed) {
+        // Silent session resumption: update UI statuses instantly without resetting keys or printing notice logs
+        dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
+        updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
+        updateEncryptionStatus(state.isEncrypted);
+        enableInput();
+        break;
+      }
+
       if (msg.roomCode.startsWith('P')) {
         dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
         updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
@@ -1528,6 +1542,7 @@ function initEventListeners() {
   dom.callHangupBtn.addEventListener('click', hangupCall);
   dom.callMuteBtn.addEventListener('click', toggleMute);
   dom.callVideoToggleBtn.addEventListener('click', toggleVideo);
+  dom.callSpeakerBtn.addEventListener('click', toggleLoudspeaker);
 
   // ── File Attachment Trigger ──
   if (dom.attachBtn) {
@@ -1558,8 +1573,26 @@ function initEventListeners() {
     });
   }
 
-  // ── Read Receipts on Focus ──
-  const handleWindowFocus = () => {
+  // ── Read Receipts and Reconnection on Focus ──
+  const handleWindowFocus = async () => {
+    // If WebSocket is disconnected but we are inside a room, trigger an instant foreground reconnect
+    if (state.roomCode && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
+      if (dom.statusLabel) {
+        dom.statusLabel.textContent = 'Connecting...';
+      }
+      try {
+        await connectWebSocket();
+        send({
+          type: 'join-room',
+          roomCode: state.roomCode,
+          username: state.username,
+          userId: state.userId
+        });
+      } catch (err) {
+        console.error('Instant focus reconnect failed:', err);
+      }
+    }
+
     if (!document.hidden && state.unreadReceivedMsgs && state.unreadReceivedMsgs.length > 0) {
       state.unreadReceivedMsgs.forEach(messageId => {
         send({ type: 'message-read', messageId });
@@ -1650,9 +1683,15 @@ function handleIncomingCall(msg) {
   if (msg.callType === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
+    state.speakerMode = 'speaker';
+    dom.callSpeakerBtn.classList.add('active');
+    dom.callSpeakerBtn.title = 'Switch to Earpiece';
   } else {
     dom.videoGrid.classList.add('hidden');
     dom.audioCallUi.classList.remove('hidden');
+    state.speakerMode = 'earpiece';
+    dom.callSpeakerBtn.classList.remove('active');
+    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
   }
   
   dom.callOverlay.classList.remove('hidden');
@@ -1675,9 +1714,15 @@ async function startCall(type) {
   if (type === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
+    state.speakerMode = 'speaker';
+    dom.callSpeakerBtn.classList.add('active');
+    dom.callSpeakerBtn.title = 'Switch to Earpiece';
   } else {
     dom.videoGrid.classList.add('hidden');
     dom.audioCallUi.classList.remove('hidden');
+    state.speakerMode = 'earpiece';
+    dom.callSpeakerBtn.classList.remove('active');
+    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
   }
 
   dom.callOverlay.classList.remove('hidden');
@@ -1825,19 +1870,37 @@ async function setupWebRTC() {
     });
 
     state.callState = 'connected';
-    dom.callStatusLabel.textContent = `Call Connected`;
     if (!state.callStartTime) {
       state.callStartTime = Date.now();
     }
+    
+    // Start active call timer display
+    startCallTimer();
+
+    // Apply default audio routing (Earpiece for audio, Speaker for video)
+    applyDefaultAudioRouting();
   };
 
   state.localStream.getTracks().forEach(track => {
     state.peerConnection.addTrack(track, state.localStream);
   });
+
+  // Process any WebRTC signals that arrived before setup was complete
+  if (state.pendingWebRTCSignals && state.pendingWebRTCSignals.length > 0) {
+    for (const pendingMsg of state.pendingWebRTCSignals) {
+      await handleWebRTCSignal(pendingMsg);
+    }
+    state.pendingWebRTCSignals = [];
+  }
 }
 
 async function handleWebRTCSignal(msg) {
-  if (!state.peerConnection) return;
+  if (!state.peerConnection) {
+    // Queue signals arriving before camera capture is complete
+    if (!state.pendingWebRTCSignals) state.pendingWebRTCSignals = [];
+    state.pendingWebRTCSignals.push(msg);
+    return;
+  }
 
   try {
     if (msg.sdp) {
@@ -1891,8 +1954,154 @@ function toggleVideo() {
   }
 }
 
+async function toggleLoudspeaker() {
+  const targetElement = dom.remoteVideo;
+  if (!targetElement) return;
+
+  if (typeof targetElement.setSinkId !== 'function') {
+    addCallSystemNotice('⚠️ Browser does not support switching audio output devices.', true);
+    return;
+  }
+
+  try {
+    // If browser supports modern selectAudioOutput, we can use it to let user manually choose high-quality output
+    if (navigator.mediaDevices.selectAudioOutput) {
+      try {
+        const device = await navigator.mediaDevices.selectAudioOutput();
+        await targetElement.setSinkId(device.deviceId);
+        
+        const isSpeaker = device.label.toLowerCase().includes('speaker') || 
+                          device.label.toLowerCase().includes('loudspeaker') || 
+                          device.label.toLowerCase().includes('external');
+        
+        state.speakerMode = isSpeaker ? 'speaker' : 'earpiece';
+        dom.callSpeakerBtn.classList.toggle('active', isSpeaker);
+        dom.callSpeakerBtn.title = isSpeaker ? 'Switch to Earpiece' : 'Switch to Loudspeaker';
+        
+        addCallSystemNotice(isSpeaker ? '🔊 Switched to Loudspeaker' : '🔇 Switched to Earpiece', false);
+        return;
+      } catch (e) {
+        // user cancelled or selectAudioOutput failed, we fall back to manual programmatic toggle below
+        console.log('selectAudioOutput prompt cancelled/failed, using automatic switch fallback.');
+      }
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+
+    if (audioOutputs.length === 0) {
+      addCallSystemNotice('⚠️ No audio output devices found.', true);
+      return;
+    }
+
+    // Toggle speaker Mode
+    if (state.speakerMode === 'speaker') {
+      // Find earpiece / default handset receiver
+      const earpiece = audioOutputs.find(d => 
+        d.label.toLowerCase().includes('earpiece') || 
+        d.label.toLowerCase().includes('receiver') || 
+        d.label.toLowerCase().includes('handset') ||
+        d.label.toLowerCase().includes('phone')
+      ) || audioOutputs[0]; // fallback to first device
+
+      await targetElement.setSinkId(earpiece.deviceId);
+      state.speakerMode = 'earpiece';
+      dom.callSpeakerBtn.classList.remove('active');
+      dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+      addCallSystemNotice('🔇 Switched to Earpiece (Normal Sound)', false);
+    } else {
+      // Find speakerphone / loudspeaker
+      const speaker = audioOutputs.find(d => 
+        d.label.toLowerCase().includes('speaker') || 
+        d.label.toLowerCase().includes('loudspeaker') ||
+        d.label.toLowerCase().includes('external')
+      ) || audioOutputs[audioOutputs.length - 1]; // fallback to last device
+
+      await targetElement.setSinkId(speaker.deviceId);
+      state.speakerMode = 'speaker';
+      dom.callSpeakerBtn.classList.add('active');
+      dom.callSpeakerBtn.title = 'Switch to Earpiece';
+      addCallSystemNotice('🔊 Switched to Loudspeaker', false);
+    }
+  } catch (err) {
+    console.error('Audio routing failed:', err);
+    addCallSystemNotice('⚠️ Failed to switch audio output.', true);
+  }
+}
+
+async function applyDefaultAudioRouting() {
+  const targetElement = dom.remoteVideo;
+  if (!targetElement) return;
+
+  if (typeof targetElement.setSinkId !== 'function') {
+    console.warn('setSinkId is not supported in this browser.');
+    return;
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+    if (audioOutputs.length === 0) return;
+
+    if (state.callType === 'audio') {
+      // Find earpiece / default handset receiver
+      const earpiece = audioOutputs.find(d => 
+        d.label.toLowerCase().includes('earpiece') || 
+        d.label.toLowerCase().includes('receiver') || 
+        d.label.toLowerCase().includes('handset') ||
+        d.label.toLowerCase().includes('phone')
+      ) || audioOutputs[0]; // fallback to first device
+
+      await targetElement.setSinkId(earpiece.deviceId);
+      state.speakerMode = 'earpiece';
+      dom.callSpeakerBtn.classList.remove('active');
+      dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+      addCallSystemNotice('🔇 Sound routed to Earpiece', false);
+    } else {
+      // Find speakerphone / loudspeaker
+      const speaker = audioOutputs.find(d => 
+        d.label.toLowerCase().includes('speaker') || 
+        d.label.toLowerCase().includes('loudspeaker') ||
+        d.label.toLowerCase().includes('external')
+      ) || audioOutputs[audioOutputs.length - 1]; // fallback to last device
+
+      await targetElement.setSinkId(speaker.deviceId);
+      state.speakerMode = 'speaker';
+      dom.callSpeakerBtn.classList.add('active');
+      dom.callSpeakerBtn.title = 'Switch to Earpiece';
+      addCallSystemNotice('🔊 Sound routed to Loudspeaker', false);
+    }
+  } catch (err) {
+    console.error('Failed to set default audio routing:', err);
+  }
+}
+
+function startCallTimer() {
+  stopCallTimer(); // Ensure any existing timer is cleared
+  state.callStartTime = Date.now();
+  
+  dom.callStatusLabel.textContent = `00:00`;
+  
+  state.callTimerInterval = setInterval(() => {
+    if (state.callState !== 'connected') {
+      stopCallTimer();
+      return;
+    }
+    const elapsed = Date.now() - state.callStartTime;
+    dom.callStatusLabel.textContent = formatDuration(elapsed);
+  }, 1000);
+}
+
+function stopCallTimer() {
+  if (state.callTimerInterval) {
+    clearInterval(state.callTimerInterval);
+    state.callTimerInterval = null;
+  }
+}
+
 function resetCallUI() {
   stopRingtone();
+  stopCallTimer();
   
   if (state.callStartTime) {
     const duration = Date.now() - state.callStartTime;
@@ -1921,6 +2130,14 @@ function resetCallUI() {
   
   state.callState = 'idle';
   state.callType = null;
+  state.pendingWebRTCSignals = [];
+  
+  // Reset speaker defaults
+  state.speakerMode = 'speaker';
+  if (dom.callSpeakerBtn) {
+    dom.callSpeakerBtn.classList.add('active');
+    dom.callSpeakerBtn.title = 'Switch to Earpiece';
+  }
   
   dom.callOverlay.classList.add('hidden');
 }
@@ -2004,12 +2221,64 @@ async function sendEncryptedFile(file) {
   }
 }
 
+function detectInAppBrowser() {
+  const ua = navigator.userAgent || navigator.vendor || window.opera;
+  const isInApp = (
+    ua.includes('FBAN') || 
+    ua.includes('FBAV') || 
+    ua.includes('Instagram') || 
+    ua.includes('Messenger') || 
+    ua.includes('Telegram') || 
+    ua.includes('WhatsApp') || 
+    ua.includes('Line') || 
+    ua.includes('WeChat')
+  );
+  
+  if (isInApp) {
+    const warningEl = document.getElementById('secure-context-warning');
+    if (warningEl) {
+      warningEl.innerHTML = `⚠️ <strong>In-App Browser Detected:</strong> You are currently inside a social media in-app browser (Instagram/Facebook/Telegram). Microphone, camera, and encryption APIs are heavily restricted here. Please tap the top-right menu and choose <strong>"Open in Chrome"</strong> or <strong>"Open in Safari"</strong> for a flawless experience.`;
+      warningEl.classList.remove('hidden');
+    }
+  }
+}
+
 // ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 function init() {
   initParticles();
   initEventListeners();
+  
+  // Register PWA Service Worker for offline instant loading and installability
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then(() => console.log('ServiceWorker registered successfully'))
+        .catch(err => console.error('ServiceWorker registration failed:', err));
+    });
+  }
+
+  // Detect and alert on restricted in-app WebViews
+  detectInAppBrowser();
+
+  // Offline/Online resilient connection alerts
+  window.addEventListener('offline', () => {
+    const warningEl = document.getElementById('secure-context-warning');
+    if (warningEl) {
+      warningEl.innerHTML = `📡 <strong>Network Offline:</strong> Your internet connection has dropped. Attempting to reconnect...`;
+      warningEl.classList.remove('hidden');
+    }
+  });
+
+  window.addEventListener('online', () => {
+    const warningEl = document.getElementById('secure-context-warning');
+    if (warningEl && warningEl.innerHTML.includes('Network Offline')) {
+      warningEl.classList.add('hidden');
+    }
+    // Instant foreground reconnect
+    handleWindowFocus();
+  });
   
   // E2EE secure context check
   const hasCrypto = !!(window.crypto && window.crypto.subtle);

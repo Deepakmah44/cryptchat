@@ -94,6 +94,48 @@ wss.on('connection', (ws) => {
             return;
           }
         }
+
+        // Check if this is a reconnecting user resuming their session
+        let existingUser = null;
+        if (msg.userId) {
+          existingUser = room.users.find(u => u.id === msg.userId);
+        }
+
+        if (existingUser) {
+          // Clear the pending disconnect timeout since the user has returned
+          if (existingUser.disconnectTimeout) {
+            clearTimeout(existingUser.disconnectTimeout);
+            existingUser.disconnectTimeout = null;
+          }
+          // Update the WebSocket instance to the new active connection
+          existingUser.ws = ws;
+          currentUser = existingUser;
+          currentRoom = roomCode;
+
+          const peer = room.users.find(u => u.id !== currentUser.id);
+
+          // Confirm re-join session to the client
+          ws.send(JSON.stringify({
+            type: 'room-joined',
+            roomCode,
+            userId: currentUser.id,
+            peerUsername: peer ? peer.username : null,
+            resumed: true
+          }));
+
+          // Send stored room messages (resending ensures client captures anything missed)
+          const allMessages = loadMessages();
+          const roomHistory = allMessages.filter(m => m.roomCode === roomCode);
+          if (roomHistory.length > 0) {
+            ws.send(JSON.stringify({
+              type: 'message-history',
+              messages: roomHistory
+            }));
+          }
+          break;
+        }
+
+        // Normal new join flow
         if (room.users.length >= 2) {
           ws.send(JSON.stringify({ type: 'error', message: 'Room is full (max 2 users).' }));
           return;
@@ -255,14 +297,17 @@ wss.on('connection', (ws) => {
     if (currentRoom && currentUser) {
       const room = rooms.get(currentRoom);
       if (room) {
-        room.users = room.users.filter(u => u.id !== currentUser.id);
-        broadcastToRoom(currentRoom, {
-          type: 'peer-left',
-          username: currentUser.username
-        });
-        if (room.users.length === 0) {
-          rooms.delete(currentRoom);
-        }
+        // Set disconnect timeout to allow grace period for reconnecting
+        currentUser.disconnectTimeout = setTimeout(() => {
+          room.users = room.users.filter(u => u.id !== currentUser.id);
+          broadcastToRoom(currentRoom, {
+            type: 'peer-left',
+            username: currentUser.username
+          });
+          if (room.users.length === 0) {
+            rooms.delete(currentRoom);
+          }
+        }, 10000); // 10 seconds grace period
       }
     }
   });

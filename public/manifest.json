@@ -1,0 +1,18 @@
+{
+  "name": "CryptChat — Private Ephemeral Chat",
+  "short_name": "CryptChat",
+  "description": "End-to-end encrypted private peer-to-peer secure chat and calling application.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a1a",
+  "theme_color": "#0a0a1a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/img/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
