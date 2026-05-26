@@ -591,7 +591,6 @@ input[type="password"] {
   font-size: 1.25rem;
   font-weight: 700;
   text-align: center;
-  text-transform: uppercase;
   transition: all var(--transition-fast) ease-in-out;
 }
 

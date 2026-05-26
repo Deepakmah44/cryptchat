@@ -1295,7 +1295,6 @@ function initEventListeners() {
   const boxes = document.querySelectorAll('.key-box');
   boxes.forEach((box, idx) => {
     box.addEventListener('input', () => {
-      box.value = box.value.toUpperCase();
       if (box.value.length === 1 && idx < boxes.length - 1) {
         boxes[idx + 1].focus();
       }
