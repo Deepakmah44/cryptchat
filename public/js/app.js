@@ -320,9 +320,10 @@ async function handleServerMessage(msg) {
       state.upperKey = msg.upperKey;
       state.lowerKey = msg.lowerKey;
       
-      // Render one-time visualization keys
+      // Render one-time visualization keys & code
       document.getElementById('created-upper-key').textContent = msg.upperKey;
       document.getElementById('created-lower-key').textContent = msg.lowerKey;
+      document.getElementById('created-room-code').textContent = msg.roomCode;
       document.getElementById('created-keys-container').classList.remove('hidden');
 
       // Derive E2EE key locally via PBKDF2 symmetrically
