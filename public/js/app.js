@@ -317,19 +317,24 @@ async function handleServerMessage(msg) {
     case 'room-created':
       state.roomCode = msg.roomCode;
       state.userId = msg.userId;
-      switchToChat();
-      if (msg.roomCode.startsWith('P')) {
-        dom.chatPeerName.textContent = 'Waiting for peer...';
-        updateConnectionStatus('waiting', 'Room ready. Share the secret phrase.');
-        await state.crypto.deriveKeyFromSecret(state.secretPhrase, msg.roomCode);
-        state.isEncrypted = true;
-        updateEncryptionStatus(true);
-        enableInput();
-        addSystemNotice('🔒 E2E Encrypted');
-      } else {
-        updateConnectionStatus('waiting', 'Waiting for peer...');
-        addSystemNotice('Room created. Share the code to invite someone.');
-      }
+      state.upperKey = msg.upperKey;
+      state.lowerKey = msg.lowerKey;
+      
+      // Render one-time visualization keys
+      document.getElementById('created-upper-key').textContent = msg.upperKey;
+      document.getElementById('created-lower-key').textContent = msg.lowerKey;
+      document.getElementById('created-keys-container').classList.remove('hidden');
+
+      // Derive E2EE key locally via PBKDF2 symmetrically
+      await state.crypto.deriveKeyFromSecret(msg.upperKey + msg.lowerKey, msg.roomCode);
+      state.isEncrypted = true;
+      updateEncryptionStatus(true);
+      enableInput();
+      addSystemNotice('🔒 E2E Encrypted');
+
+      // Reset button
+      dom.createRoomBtn.disabled = false;
+      dom.createRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> + Create unique owned room`;
       break;
 
     case 'room-joined':
@@ -339,7 +344,6 @@ async function handleServerMessage(msg) {
       switchToChat();
       
       if (msg.resumed) {
-        // Silent session resumption: update UI statuses instantly without resetting keys or printing notice logs
         dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
         updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
         updateEncryptionStatus(state.isEncrypted);
@@ -347,30 +351,23 @@ async function handleServerMessage(msg) {
         break;
       }
 
-      // Reset old crypto states completely before initiating a fresh session key exchange
-      state.crypto = new CryptoEngine();
       state.isEncrypted = false;
       updateEncryptionStatus(false);
 
-      if (msg.roomCode.startsWith('P')) {
-        dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
-        updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
-        if (msg.peerUsername) {
-          addSystemNotice(`Connected with ${msg.peerUsername}`);
-        } else {
-          addSystemNotice('Room ready. Waiting for peer to connect.');
-        }
-        await state.crypto.deriveKeyFromSecret(state.secretPhrase, msg.roomCode);
-        state.isEncrypted = true;
-        updateEncryptionStatus(true);
-        enableInput();
-        addSystemNotice('🔒 E2E Encrypted');
-      } else {
-        dom.chatPeerName.textContent = msg.peerUsername;
-        updateConnectionStatus('online', 'Online');
+      dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
+      updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
+      if (msg.peerUsername) {
         addSystemNotice(`Connected with ${msg.peerUsername}`);
-        await initiateKeyExchange();
+      } else {
+        addSystemNotice('Room ready. Waiting for peer to connect.');
       }
+      
+      // Symmetrically derive E2EE key from the inputted combined key
+      await state.crypto.deriveKeyFromSecret(state.combinedKey, msg.roomCode);
+      state.isEncrypted = true;
+      updateEncryptionStatus(true);
+      enableInput();
+      addSystemNotice('🔒 E2E Encrypted');
       break;
 
     case 'peer-joined':
@@ -378,13 +375,6 @@ async function handleServerMessage(msg) {
       dom.chatPeerName.textContent = msg.peerUsername;
       updateConnectionStatus('online', 'Online');
       addSystemNotice(`${msg.peerUsername} joined the room`);
-      if (!state.roomCode.startsWith('P')) {
-        // Reset old crypto states completely before initiating a fresh key exchange session
-        state.crypto = new CryptoEngine();
-        state.isEncrypted = false;
-        updateEncryptionStatus(false);
-        await initiateKeyExchange();
-      }
       break;
 
     case 'key-exchange':
@@ -795,6 +785,20 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, file, f
 
   dom.messagesList.appendChild(wrapper);
   scrollToBottom();
+
+  // Localized 10-minute DOM automatic fadeout and destruction
+  const TTL_TIME = 600000; // 10 minutes in ms
+  const timeElapsed = Date.now() - timestamp;
+  const timeLeft = Math.max(0, TTL_TIME - timeElapsed);
+
+  setTimeout(() => {
+    wrapper.style.transition = 'opacity 1s ease-out, transform 1s ease-out';
+    wrapper.style.opacity = '0';
+    wrapper.style.transform = 'translateY(-10px)';
+    setTimeout(() => {
+      wrapper.remove();
+    }, 1000);
+  }, timeLeft);
 }
 
 function markMessageDelivered(messageId) {
@@ -1287,6 +1291,22 @@ function initEventListeners() {
       : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
   });
 
+  // 4x2 Grid Auto-focus and shift logic
+  const boxes = document.querySelectorAll('.key-box');
+  boxes.forEach((box, idx) => {
+    box.addEventListener('input', () => {
+      box.value = box.value.toUpperCase();
+      if (box.value.length === 1 && idx < boxes.length - 1) {
+        boxes[idx + 1].focus();
+      }
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && box.value.length === 0 && idx > 0) {
+        boxes[idx - 1].focus();
+      }
+    });
+  });
+
   // Create Room
   dom.createRoomBtn.addEventListener('click', async () => {
     const username = dom.usernameInput.value.trim();
@@ -1296,19 +1316,51 @@ function initEventListeners() {
       return;
     }
     state.username = username;
-    const roomCode = generateRoomCode();
 
     try {
       dom.createRoomBtn.disabled = true;
       dom.createRoomBtn.textContent = 'Creating...';
       await connectWebSocket();
-      send({ type: 'create-room', roomCode, username });
+      send({ type: 'create-room', username });
     } catch {
       showJoinError('Cannot connect to server. Is it running?');
       dom.createRoomBtn.disabled = false;
-      dom.createRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create Room`;
+      dom.createRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> + Create unique owned room`;
     }
   });
+
+  // Copy Keys and Code button inside one-time display card
+  const copyBtn = document.getElementById('copy-keys-btn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      if (!state.roomCode) return;
+      const textToCopy = `Room Code: ${state.roomCode}\nUpper Key: ${state.upperKey}\nLower Key: ${state.lowerKey}`;
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        copyBtn.textContent = 'Copied Successfully!';
+        setTimeout(() => {
+          copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Keys & Code`;
+        }, 2000);
+      } catch (err) {
+        const textarea = document.createElement('textarea');
+        textarea.value = textToCopy;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+    });
+  }
+
+  // Enter Room transition button
+  const enterBtn = document.getElementById('enter-created-room-btn');
+  if (enterBtn) {
+    enterBtn.addEventListener('click', () => {
+      switchToChat();
+      updateConnectionStatus('waiting', 'Waiting for peer...');
+      addSystemNotice('Room ready. Waiting for peer to connect.');
+    });
+  }
 
   // Join Room
   dom.joinRoomBtn.addEventListener('click', async () => {
@@ -1320,29 +1372,42 @@ function initEventListeners() {
       return;
     }
     if (!roomCode || roomCode.length < 4) {
-      showJoinError('Please enter a valid room code.');
+      showJoinError('Please enter a valid Room Code.');
       dom.roomCodeInput.focus();
       return;
     }
+
+    // Combine Upper & Lower keys from grid boxes
+    let combinedKey = '';
+    boxes.forEach(box => {
+      combinedKey += box.value.trim().toUpperCase();
+    });
+
+    if (combinedKey.length !== 8) {
+      showJoinError('Please fill all 8 key grid boxes.');
+      return;
+    }
+
     state.username = username;
+    state.combinedKey = combinedKey;
 
     try {
       dom.joinRoomBtn.disabled = true;
       dom.joinRoomBtn.textContent = 'Joining...';
       await connectWebSocket();
-      send({ type: 'join-room', roomCode, username });
+      send({ type: 'join-room', roomCode, combinedKey, username });
     } catch {
       showJoinError('Cannot connect to server. Is it running?');
       dom.joinRoomBtn.disabled = false;
-      dom.joinRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Join`;
+      dom.joinRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Join Secure Room`;
     }
   });
 
-  // Enter key on room code
+  // Enter key on room code - focus first key box
   dom.roomCodeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      dom.joinRoomBtn.click();
+      if (boxes[0]) boxes[0].focus();
     }
   });
 
