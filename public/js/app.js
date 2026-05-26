@@ -1371,7 +1371,7 @@ function initEventListeners() {
     // Combine Upper & Lower keys from grid boxes
     let combinedKey = '';
     boxes.forEach(box => {
-      combinedKey += box.value.trim().toUpperCase();
+      combinedKey += box.value.trim();
     });
 
     if (combinedKey.length !== 8) {

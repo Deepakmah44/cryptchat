@@ -122,18 +122,29 @@ wss.on('connection', (ws, req) => {
       }
 
       case 'join-room': {
-        const inputKey = (msg.combinedKey || '').trim();
+        let roomCode = msg.roomCode;
+        let room;
 
-        // Locate room by hashing the input combinedKey and querying the database
-        const incomingHash = hashKey(inputKey);
-        const room = db.getRoomByKeyHash(incomingHash);
-        
-        if (!room) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
-          return;
+        // Path A: Secure Direct (Starts with 'P')
+        if (roomCode && roomCode.startsWith('P')) {
+          room = db.getRoom(roomCode);
+          if (!room) {
+            db.createRoom(roomCode, 'TEMPORARY_PERSONAL_ROOM');
+            room = db.getRoom(roomCode);
+          }
+        } 
+        // Path B: Permanent Secure Room (Dual-Keys)
+        else {
+          const inputKey = (msg.combinedKey || '').trim();
+          const incomingHash = hashKey(inputKey);
+          room = db.getRoomByKeyHash(incomingHash);
+          
+          if (!room) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
+            return;
+          }
+          roomCode = room.uuid;
         }
-
-        const roomCode = room.uuid;
 
         // Check active connection capacity
         if (room.activeConnections >= 2) {
