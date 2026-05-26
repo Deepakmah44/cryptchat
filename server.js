@@ -95,13 +95,6 @@ wss.on('connection', (ws, req) => {
     switch (msg.type) {
 
       case 'create-room': {
-        // Enforce database IP rate limiter check
-        const limit = db.getRateLimit(clientIp);
-        if (limit.failedAttempts >= 5 && Date.now() - limit.lastAttempt < 900000) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Rate limit exceeded. Try again in 15 minutes.' }));
-          return;
-        }
-
         const roomCode = crypto.randomUUID().substring(0, 8).toUpperCase();
         const upperKey = generateSecureKey();
         const lowerKey = generateSecureKey();
@@ -131,27 +124,16 @@ wss.on('connection', (ws, req) => {
       case 'join-room': {
         const inputKey = (msg.combinedKey || '').trim();
 
-        // Enforce database IP rate limiter check
-        const limit = db.getRateLimit(clientIp);
-        if (limit.failedAttempts >= 5 && Date.now() - limit.lastAttempt < 900000) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Rate limit exceeded. Try again in 15 minutes.' }));
-          return;
-        }
-
         // Locate room by hashing the input combinedKey and querying the database
         const incomingHash = hashKey(inputKey);
         const room = db.getRoomByKeyHash(incomingHash);
         
         if (!room) {
-          db.recordFailedAttempt(clientIp);
           ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
           return;
         }
 
         const roomCode = room.uuid;
-
-        // Clear attempts on success
-        db.clearRateLimit(clientIp);
 
         // Check active connection capacity
         if (room.activeConnections >= 2) {
