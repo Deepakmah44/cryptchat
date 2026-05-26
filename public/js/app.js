@@ -48,7 +48,6 @@ const dom = {
   chatScreen: $('#chat-screen'),
   // Join
   usernameInput: $('#username-input'),
-  roomCodeInput: $('#room-code-input'),
   createRoomBtn: $('#create-room-btn'),
   joinRoomBtn: $('#join-room-btn'),
   joinError: $('#join-error'),
@@ -320,10 +319,9 @@ async function handleServerMessage(msg) {
       state.upperKey = msg.upperKey;
       state.lowerKey = msg.lowerKey;
       
-      // Render one-time visualization keys & code
+      // Render one-time visualization keys
       document.getElementById('created-upper-key').textContent = msg.upperKey;
       document.getElementById('created-lower-key').textContent = msg.lowerKey;
-      document.getElementById('created-room-code').textContent = msg.roomCode;
       document.getElementById('created-keys-container').classList.remove('hidden');
 
       // Derive E2EE key locally via PBKDF2 symmetrically
@@ -1333,13 +1331,12 @@ function initEventListeners() {
   const copyBtn = document.getElementById('copy-keys-btn');
   if (copyBtn) {
     copyBtn.addEventListener('click', async () => {
-      if (!state.roomCode) return;
-      const textToCopy = `Room Code: ${state.roomCode}\nUpper Key: ${state.upperKey}\nLower Key: ${state.lowerKey}`;
+      const textToCopy = `Upper Key: ${state.upperKey}\nLower Key: ${state.lowerKey}`;
       try {
         await navigator.clipboard.writeText(textToCopy);
         copyBtn.textContent = 'Copied Successfully!';
         setTimeout(() => {
-          copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Keys & Code`;
+          copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Keys`;
         }, 2000);
       } catch (err) {
         const textarea = document.createElement('textarea');
@@ -1365,15 +1362,9 @@ function initEventListeners() {
   // Join Room
   dom.joinRoomBtn.addEventListener('click', async () => {
     const username = dom.usernameInput.value.trim();
-    const roomCode = dom.roomCodeInput.value.trim().toUpperCase();
     if (!username) {
       showJoinError('Please enter your name.');
       dom.usernameInput.focus();
-      return;
-    }
-    if (!roomCode || roomCode.length < 4) {
-      showJoinError('Please enter a valid Room Code.');
-      dom.roomCodeInput.focus();
       return;
     }
 
@@ -1395,7 +1386,7 @@ function initEventListeners() {
       dom.joinRoomBtn.disabled = true;
       dom.joinRoomBtn.textContent = 'Joining...';
       await connectWebSocket();
-      send({ type: 'join-room', roomCode, combinedKey, username });
+      send({ type: 'join-room', combinedKey, username });
     } catch {
       showJoinError('Cannot connect to server. Is it running?');
       dom.joinRoomBtn.disabled = false;
@@ -1403,19 +1394,11 @@ function initEventListeners() {
     }
   });
 
-  // Enter key on room code - focus first key box
-  dom.roomCodeInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (boxes[0]) boxes[0].focus();
-    }
-  });
-
-  // Enter key on username — focus room code
+  // Enter key on username — focus first key box
   dom.usernameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      dom.roomCodeInput.focus();
+      if (boxes[0]) boxes[0].focus();
     }
   });
 

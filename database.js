@@ -36,6 +36,15 @@ module.exports = {
     const db = loadDB();
     return db.rooms[uuid] || null;
   },
+  getRoomByKeyHash(keyHash) {
+    const db = loadDB();
+    for (const uuid in db.rooms) {
+      if (db.rooms[uuid].keyHash === keyHash) {
+        return db.rooms[uuid];
+      }
+    }
+    return null;
+  },
   createRoom(uuid, keyHash) {
     const db = loadDB();
     db.rooms[uuid] = {

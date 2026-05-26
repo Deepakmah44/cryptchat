@@ -129,7 +129,6 @@ wss.on('connection', (ws, req) => {
       }
 
       case 'join-room': {
-        const roomCode = (msg.roomCode || '').trim().toUpperCase();
         const inputKey = (msg.combinedKey || '').trim();
 
         // Enforce database IP rate limiter check
@@ -139,20 +138,17 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
-        const room = db.getRoom(roomCode);
+        // Locate room by hashing the input combinedKey and querying the database
+        const incomingHash = hashKey(inputKey);
+        const room = db.getRoomByKeyHash(incomingHash);
+        
         if (!room) {
           db.recordFailedAttempt(clientIp);
           ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
           return;
         }
 
-        // Verify scrypt hash matches keys
-        const incomingHash = hashKey(inputKey);
-        if (incomingHash !== room.keyHash) {
-          db.recordFailedAttempt(clientIp);
-          ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
-          return;
-        }
+        const roomCode = room.uuid;
 
         // Clear attempts on success
         db.clearRateLimit(clientIp);
