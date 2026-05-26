@@ -16,12 +16,10 @@ const state = {
   isEncrypted: false,
   isConnected: false,
   reconnectAttempts: 0,
-  maxReconnectAttempts: 10,
+  reconnectTimeoutId: null,
   typingTimeout: null,
   isTyping: false,
   messageIdCounter: 0,
-  viewOnceActive: false,
-  incomingSnaps: new Map(),
   unreadReceivedMsgs: [],
   secretPhrase: null,
 
@@ -65,7 +63,6 @@ const dom = {
   statusDot: null,
   statusLabel: $('#status-label'),
   encryptionBadge: $('#encryption-badge'),
-  encryptionLabel: $('#encryption-label'),
   leaveBtn: $('#leave-btn'),
   roomInfoBtn: $('#room-info-btn'),
   roomInfoPanel: $('#room-info-panel'),
@@ -78,7 +75,7 @@ const dom = {
   typingName: $('#typing-name'),
   // Input
   messageInput: $('#message-input'),
-  viewOnceBtn: $('#view-once-btn'),
+  cleanLogsBtn: $('#clean-logs-btn'),
   attachBtn: $('#attach-btn'),
   fileInput: $('#file-input'),
   sendBtn: $('#send-btn'),
@@ -258,8 +255,12 @@ function connectWebSocket() {
     };
 
     ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      handleServerMessage(msg);
+      try {
+        const msg = JSON.parse(event.data);
+        handleServerMessage(msg);
+      } catch (err) {
+        console.error('Failed to parse server message:', err);
+      }
     };
 
     ws.onclose = () => {
@@ -279,11 +280,14 @@ function connectWebSocket() {
 }
 
 function attemptReconnect() {
-  if (state.reconnectAttempts >= state.maxReconnectAttempts) return;
   state.reconnectAttempts++;
-  const delay = Math.min(1000 * Math.pow(2, state.reconnectAttempts), 30000);
+  const delay = Math.min(1000 * Math.pow(2, Math.min(state.reconnectAttempts, 8)), 30000);
   
-  setTimeout(async () => {
+  if (state.reconnectTimeoutId) {
+    clearTimeout(state.reconnectTimeoutId);
+  }
+
+  state.reconnectTimeoutId = setTimeout(async () => {
     try {
       await connectWebSocket();
       // Re-join the room with original userId to resume same session
@@ -321,7 +325,7 @@ async function handleServerMessage(msg) {
         state.isEncrypted = true;
         updateEncryptionStatus(true);
         enableInput();
-        addSystemNotice('🔒 End-to-end encryption activated (derived from secret phrase)');
+        addSystemNotice('🔒 E2E Encrypted');
       } else {
         updateConnectionStatus('waiting', 'Waiting for peer...');
         addSystemNotice('Room created. Share the code to invite someone.');
@@ -360,7 +364,7 @@ async function handleServerMessage(msg) {
         state.isEncrypted = true;
         updateEncryptionStatus(true);
         enableInput();
-        addSystemNotice('🔒 End-to-end encryption activated (derived from secret phrase)');
+        addSystemNotice('🔒 E2E Encrypted');
       } else {
         dom.chatPeerName.textContent = msg.peerUsername;
         updateConnectionStatus('online', 'Online');
@@ -392,6 +396,32 @@ async function handleServerMessage(msg) {
     case 'message-history':
       await handleMessageHistory(msg.messages);
       break;
+
+    case 'peer-reconnected':
+      // Peer came back online after a brief disconnect
+      state.peerUsername = msg.peerUsername;
+      dom.chatPeerName.textContent = msg.peerUsername;
+      updateConnectionStatus('online', 'Online');
+      break;
+
+    case 'old-messages-destroyed': {
+      const threshold = msg.threshold;
+      const messageElements = document.querySelectorAll('.message-wrapper');
+      messageElements.forEach(el => {
+        const tsVal = el.dataset.timestamp;
+        if (tsVal) {
+          const timestamp = parseInt(tsVal, 10);
+          if (timestamp < threshold) {
+            el.style.transition = 'all 0.4s ease';
+            el.style.opacity = '0';
+            el.style.transform = 'translateY(-10px)';
+            setTimeout(() => el.remove(), 400);
+          }
+        }
+      });
+      addSystemNotice('⏰ 10 minute pehele ke saare logs permanently destroy kar diye gaye hain.');
+      break;
+    }
 
     case 'encrypted-message':
       await handleEncryptedMessage(msg);
@@ -529,20 +559,20 @@ async function sendMessage() {
         iv,
         ciphertext
       });
-      // Update locally
+      // Update locally — only update the text content, preserve meta (timestamp, status)
       const wrapper = document.querySelector(`[data-message-id="${state.editingMessageId}"]`);
       if (wrapper) {
-        const bubble = wrapper.querySelector('.message-bubble');
-        if (bubble) {
-          bubble.innerHTML = escapeHtml(text);
+        const textEl = wrapper.querySelector('.message-text');
+        if (textEl) {
+          textEl.textContent = text;
         }
         // Add edited tag if not present
-        const meta = wrapper.querySelector('.message-meta');
-        if (meta && !meta.querySelector('.edited-tag')) {
+        const metaWA = wrapper.querySelector('.message-meta-whatsapp');
+        if (metaWA && !metaWA.querySelector('.edited-tag')) {
           const editTag = document.createElement('span');
           editTag.className = 'edited-tag';
           editTag.textContent = '(edited)';
-          meta.insertBefore(editTag, meta.firstChild);
+          metaWA.insertBefore(editTag, metaWA.firstChild);
         }
       }
       cancelEditMode();
@@ -560,7 +590,6 @@ async function sendMessage() {
 
   // ── NORMAL SEND ──
   const messageId = `${state.userId}-${++state.messageIdCounter}`;
-  const isViewOnce = state.viewOnceActive;
 
   try {
     const { iv, ciphertext } = await state.crypto.encrypt(text);
@@ -568,25 +597,16 @@ async function sendMessage() {
       type: 'encrypted-message',
       iv,
       ciphertext,
-      messageId,
-      viewOnce: isViewOnce
+      messageId
     });
 
     // Show locally
     appendMessage({
-      text: isViewOnce ? '👁️ View Once Message Sent' : text,
+      text,
       isSent: true,
       timestamp: Date.now(),
-      messageId,
-      isViewOnce: isViewOnce
+      messageId
     });
-
-    // Reset View Once toggle if active
-    if (state.viewOnceActive) {
-      state.viewOnceActive = false;
-      dom.viewOnceBtn.classList.remove('active');
-      dom.messageInput.placeholder = 'Type a message...';
-    }
 
     dom.messageInput.value = '';
     dom.messageInput.style.height = 'auto';
@@ -601,41 +621,6 @@ async function sendMessage() {
 
 async function handleEncryptedMessage(msg) {
   try {
-    if (msg.viewOnce) {
-      // Store in memory for later decryption when tapped
-      state.incomingSnaps.set(msg.messageId, {
-        iv: msg.iv,
-        ciphertext: msg.ciphertext,
-        senderName: msg.fromUsername,
-        timestamp: msg.timestamp,
-        file: msg.file,
-        fileName: msg.fileName,
-        fileType: msg.fileType,
-        fileSize: msg.fileSize
-      });
-
-      appendMessage({
-        text: '',
-        isSent: false,
-        senderName: msg.fromUsername,
-        timestamp: msg.timestamp,
-        messageId: msg.messageId,
-        isViewOnce: true,
-        file: msg.file,
-        fileName: msg.fileName,
-        fileType: msg.fileType,
-        fileSize: msg.fileSize
-      });
-      
-      // Send delivery receipt
-      send({ type: 'message-delivered', messageId: msg.messageId });
-      
-      if (document.hidden) {
-        window.playNotificationSound();
-      }
-      return;
-    }
-
     const plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
     appendMessage({
       text: plaintext,
@@ -686,47 +671,27 @@ async function handleMessageHistory(messages) {
       }
 
       const isSent = msg.fromUsername === state.username;
-      
-      let plaintext = '';
-      if (msg.viewOnce) {
-        if (!isSent) {
-          state.incomingSnaps.set(msg.messageId, {
-            iv: msg.iv,
-            ciphertext: msg.ciphertext,
-            senderName: msg.fromUsername,
-            timestamp: msg.timestamp,
-            file: msg.file,
-            fileName: msg.fileName,
-            fileType: msg.fileType,
-            fileSize: msg.fileSize
-          });
-        }
-      } else {
-        plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
-      }
+      const plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
 
       appendMessage({
-        text: msg.viewOnce && isSent ? '👁️ View Once File Sent' : (msg.viewOnce ? '' : plaintext),
+        text: plaintext,
         isSent: isSent,
         senderName: msg.fromUsername,
         timestamp: msg.timestamp,
         messageId: msg.messageId,
-        isViewOnce: msg.viewOnce,
         file: msg.file,
         fileName: msg.fileName,
         fileType: msg.fileType,
         fileSize: msg.fileSize
       });
 
-      // Send read receipt if received, tab is focused, and not viewOnce
+      // Send read receipt if received and tab is focused
       if (!isSent) {
-        if (!msg.viewOnce) {
-          if (!document.hidden) {
-            send({ type: 'message-read', messageId: msg.messageId });
-          } else {
-            if (!state.unreadReceivedMsgs) state.unreadReceivedMsgs = [];
-            state.unreadReceivedMsgs.push(msg.messageId);
-          }
+        if (!document.hidden) {
+          send({ type: 'message-read', messageId: msg.messageId });
+        } else {
+          if (!state.unreadReceivedMsgs) state.unreadReceivedMsgs = [];
+          state.unreadReceivedMsgs.push(msg.messageId);
         }
       }
     } catch (err) {
@@ -738,10 +703,11 @@ async function handleMessageHistory(messages) {
 // ═══════════════════════════════════════════
 // UI — MESSAGES
 // ═══════════════════════════════════════════
-function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewOnce, file, fileName, fileType, fileSize }) {
+function appendMessage({ text, isSent, senderName, timestamp, messageId, file, fileName, fileType, fileSize }) {
   const wrapper = document.createElement('div');
   wrapper.className = `message-wrapper ${isSent ? 'sent' : 'received'}`;
   if (messageId) wrapper.dataset.messageId = messageId;
+  wrapper.dataset.timestamp = timestamp;
 
   const time = new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -760,23 +726,7 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
     html += `<span class="sender-name">${escapeHtml(senderName)}</span>`;
   }
   
-  if (isViewOnce) {
-    if (isSent) {
-      html += `
-        <div class="message-bubble view-once-sent">
-          <div class="message-text"><span class="snap-icon">👁️</span> View Once ${file ? 'File' : 'Message'} Sent</div>
-          ${metaHtml}
-        </div>
-      `;
-    } else {
-      html += `
-        <div class="message-bubble view-once-card">
-          <div class="message-text"><span class="snap-icon">👁️</span> Tap to Reveal ${file ? 'File' : 'Message'}</div>
-          ${metaHtml}
-        </div>
-      `;
-    }
-  } else if (file) {
+  if (file) {
     let fileHtml = '';
     const cleanText = text;
     if (fileType.startsWith('image/')) {
@@ -814,22 +764,15 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
 
   wrapper.innerHTML = html;
 
-  if (isViewOnce && !isSent) {
-    const card = wrapper.querySelector('.view-once-card');
-    if (card) {
-      card.addEventListener('click', () => revealSnap(messageId, card));
-    }
-  }
-
-  if (file && fileType.startsWith('image/')) {
+  if (file && fileType && fileType.startsWith('image/')) {
     const imgEl = wrapper.querySelector('.chat-image-preview');
     if (imgEl) {
       imgEl.addEventListener('click', () => openLightbox(imgEl.src));
     }
   }
 
-  // Attach context menu for sent text messages (not view-once, not file)
-  if (isSent && !isViewOnce && !file && messageId) {
+  // Attach context menu for sent text messages (not file)
+  if (isSent && !file && messageId) {
     const bubble = wrapper.querySelector('.message-bubble');
     if (bubble) {
       // Long press for mobile
@@ -854,80 +797,6 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, isViewO
   scrollToBottom();
 }
 
-async function revealSnap(messageId, bubbleElement) {
-  const snap = state.incomingSnaps.get(messageId);
-  if (!snap) return;
-
-  state.incomingSnaps.delete(messageId);
-
-  try {
-    const plaintext = await state.crypto.decrypt(snap.iv, snap.ciphertext);
-    
-    if (snap.file) {
-      let fileHtml = '';
-      if (snap.fileType.startsWith('image/')) {
-        fileHtml = `<img src="${plaintext}" class="chat-image-preview" alt="${escapeHtml(snap.fileName)}" title="Click to view full image">`;
-      } else if (snap.fileType.startsWith('video/')) {
-        fileHtml = `<video src="${plaintext}" class="chat-video-preview" controls playsinline autoplay></video>`;
-      } else {
-        const displaySize = formatBytes(snap.fileSize);
-        fileHtml = `
-          <a href="${plaintext}" download="${escapeHtml(snap.fileName)}" class="chat-file-download">
-            <div class="file-icon-wrapper">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            </div>
-            <div class="file-info-block">
-              <span class="file-name-label">${escapeHtml(snap.fileName)}</span>
-              <span class="file-size-label">${displaySize}</span>
-            </div>
-          </a>
-        `;
-      }
-
-      bubbleElement.innerHTML = `
-        <div class="snap-content">${fileHtml}</div>
-        <div class="view-once-timer-container">
-          <div class="view-once-timer-bar"></div>
-        </div>
-      `;
-
-      if (snap.fileType.startsWith('image/')) {
-        const imgEl = bubbleElement.querySelector('.chat-image-preview');
-        if (imgEl) {
-          imgEl.addEventListener('click', () => openLightbox(imgEl.src));
-        }
-      }
-    } else {
-      bubbleElement.innerHTML = `
-        <div class="snap-content">${escapeHtml(plaintext)}</div>
-        <div class="view-once-timer-container">
-          <div class="view-once-timer-bar"></div>
-        </div>
-      `;
-    }
-    
-    bubbleElement.classList.remove('view-once-card');
-    send({ type: 'message-opened', messageId });
-
-    setTimeout(() => {
-      const snapContent = bubbleElement.querySelector('.snap-content');
-      if (snapContent) {
-        const media = snapContent.querySelector('img, video, a');
-        if (media) {
-          media.src = '';
-        }
-        snapContent.textContent = '';
-      }
-      bubbleElement.innerHTML = `<span class="snap-icon">🚫</span> Opened & Destroyed`;
-      bubbleElement.classList.add('view-once-destroyed');
-    }, 10000);
-
-  } catch (err) {
-    console.error('Failed to decrypt snap:', err);
-    bubbleElement.innerHTML = `⚠️ [Failed to decrypt snap]`;
-  }
-}
-
 function markMessageDelivered(messageId) {
   const wrapper = document.querySelector(`[data-message-id="${messageId}"]`);
   if (!wrapper) return;
@@ -945,11 +814,6 @@ function markMessageOpened(messageId) {
   if (statusEl) {
     statusEl.classList.add('opened');
     statusEl.innerHTML = `<span class="opened-label" style="font-size: 0.65rem; font-weight:600; color:#fffc00; display:flex; align-items:center; gap:2px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Opened</span>`;
-  }
-  const bubble = wrapper.querySelector('.message-bubble');
-  if (bubble && bubble.classList.contains('view-once-sent')) {
-    bubble.innerHTML = `<span class="snap-icon">🚫</span> Opened & Destroyed`;
-    bubble.className = 'message-bubble view-once-destroyed';
   }
 }
 
@@ -1149,16 +1013,17 @@ async function handleEditMessage(msg) {
     const plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
     const wrapper = document.querySelector(`[data-message-id="${msg.messageId}"]`);
     if (wrapper) {
-      const bubble = wrapper.querySelector('.message-bubble');
-      if (bubble) {
-        bubble.innerHTML = escapeHtml(plaintext);
+      // Only update the text content, preserve meta (timestamp, status)
+      const textEl = wrapper.querySelector('.message-text');
+      if (textEl) {
+        textEl.textContent = plaintext;
       }
-      const meta = wrapper.querySelector('.message-meta');
-      if (meta && !meta.querySelector('.edited-tag')) {
+      const metaWA = wrapper.querySelector('.message-meta-whatsapp');
+      if (metaWA && !metaWA.querySelector('.edited-tag')) {
         const editTag = document.createElement('span');
         editTag.className = 'edited-tag';
         editTag.textContent = '(edited)';
-        meta.insertBefore(editTag, meta.firstChild);
+        metaWA.insertBefore(editTag, metaWA.firstChild);
       }
     }
   } catch (err) {
@@ -1207,8 +1072,6 @@ function switchToJoin() {
   state.peerUsername = null;
   state.isEncrypted = false;
   state.crypto = new CryptoEngine();
-  state.viewOnceActive = false;
-  state.incomingSnaps.clear();
   // Reset edit state
   state.editingMessageId = null;
   state.editingOriginalText = null;
@@ -1216,9 +1079,6 @@ function switchToJoin() {
   if (editBar) editBar.remove();
   // Close context menu if open
   closeContextMenu();
-  if (dom.viewOnceBtn) {
-    dom.viewOnceBtn.classList.remove('active');
-  }
   // Reset UI
   dom.chatPeerName.textContent = 'Waiting for peer...';
   dom.messagesList.innerHTML = `
@@ -1246,16 +1106,16 @@ function updateConnectionStatus(status, label) {
 function updateEncryptionStatus(active) {
   if (active) {
     dom.encryptionBadge.className = 'encryption-indicator active';
-    dom.encryptionLabel.textContent = 'Encrypted';
+    dom.encryptionBadge.title = 'End-to-End Encrypted';
   } else {
     dom.encryptionBadge.className = 'encryption-indicator pending';
-    dom.encryptionLabel.textContent = 'Securing...';
+    dom.encryptionBadge.title = 'Securing connection...';
   }
 }
 
 function enableInput() {
   dom.messageInput.disabled = false;
-  dom.viewOnceBtn.disabled = false;
+  if (dom.cleanLogsBtn) dom.cleanLogsBtn.disabled = false;
   if (dom.attachBtn) dom.attachBtn.disabled = false;
   if (dom.emojiBtn) dom.emojiBtn.disabled = false;
   dom.sendBtn.disabled = false;
@@ -1268,7 +1128,7 @@ function enableInput() {
 
 function disableInput() {
   dom.messageInput.disabled = true;
-  dom.viewOnceBtn.disabled = true;
+  if (dom.cleanLogsBtn) dom.cleanLogsBtn.disabled = true;
   if (dom.attachBtn) dom.attachBtn.disabled = true;
   if (dom.emojiBtn) {
     dom.emojiBtn.disabled = true;
@@ -1511,14 +1371,13 @@ function initEventListeners() {
     }, 80);
   });
 
-  // View Once Toggle
-  dom.viewOnceBtn.addEventListener('click', () => {
-    state.viewOnceActive = !state.viewOnceActive;
-    dom.viewOnceBtn.classList.toggle('active', state.viewOnceActive);
-    if (state.viewOnceActive) {
-      dom.messageInput.placeholder = 'Type a view-once message...';
-    } else {
-      dom.messageInput.placeholder = 'Type a message...';
+  // Destroy old messages (older than 10 minutes)
+  dom.cleanLogsBtn.addEventListener('click', () => {
+    if (confirm('Bhai, kya aap sach me 10 minute pehele ke saare messages dono side aur server se permanently destroy karna chahte hain?')) {
+      send({
+        type: 'destroy-old-messages',
+        roomCode: state.roomCode
+      });
     }
   });
 
@@ -1536,6 +1395,7 @@ function initEventListeners() {
   // Leave room
   dom.leaveBtn.addEventListener('click', () => {
     if (confirm('Kya aap sach mein chat leave karna chahte hain? Saari chat history delete ho jayegi.')) {
+      send({ type: 'leave-room' });
       switchToJoin();
     }
   });
@@ -1639,32 +1499,6 @@ function initEventListeners() {
   }
 
   // ── Read Receipts and Reconnection on Focus ──
-  const handleWindowFocus = async () => {
-    // If WebSocket is disconnected but we are inside a room, trigger an instant foreground reconnect
-    if (state.roomCode && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
-      if (dom.statusLabel) {
-        dom.statusLabel.textContent = 'Connecting...';
-      }
-      try {
-        await connectWebSocket();
-        send({
-          type: 'join-room',
-          roomCode: state.roomCode,
-          username: state.username,
-          userId: state.userId
-        });
-      } catch (err) {
-        console.error('Instant focus reconnect failed:', err);
-      }
-    }
-
-    if (!document.hidden && state.unreadReceivedMsgs && state.unreadReceivedMsgs.length > 0) {
-      state.unreadReceivedMsgs.forEach(messageId => {
-        send({ type: 'message-read', messageId });
-      });
-      state.unreadReceivedMsgs = [];
-    }
-  };
   window.addEventListener('focus', handleWindowFocus);
   document.addEventListener('visibilitychange', handleWindowFocus);
 }
@@ -1751,12 +1585,14 @@ function handleIncomingCall(msg) {
     state.speakerMode = 'speaker';
     dom.callSpeakerBtn.classList.add('active');
     dom.callSpeakerBtn.title = 'Switch to Earpiece';
+    dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
     dom.audioCallUi.classList.remove('hidden');
     state.speakerMode = 'earpiece';
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+    dom.callOverlay.classList.remove('video-active');
   }
   
   dom.callOverlay.classList.remove('hidden');
@@ -1782,12 +1618,14 @@ async function startCall(type) {
     state.speakerMode = 'speaker';
     dom.callSpeakerBtn.classList.add('active');
     dom.callSpeakerBtn.title = 'Switch to Earpiece';
+    dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
     dom.audioCallUi.classList.remove('hidden');
     state.speakerMode = 'earpiece';
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+    dom.callOverlay.classList.remove('video-active');
   }
 
   dom.callOverlay.classList.remove('hidden');
@@ -2194,6 +2032,7 @@ function resetCallUI() {
     dom.callSpeakerBtn.title = 'Switch to Earpiece';
   }
   
+  dom.callOverlay.classList.remove('video-active');
   dom.callOverlay.classList.add('hidden');
 }
 
@@ -2228,7 +2067,6 @@ async function sendEncryptedFile(file) {
 
   addSystemNotice(`Encrypting and uploading: ${file.name}...`);
   const messageId = `${state.userId}-${++state.messageIdCounter}`;
-  const isViewOnce = state.viewOnceActive;
 
   try {
     const reader = new FileReader();
@@ -2242,7 +2080,6 @@ async function sendEncryptedFile(file) {
         iv,
         ciphertext,
         messageId,
-        viewOnce: isViewOnce,
         file: true,
         fileName: file.name,
         fileType: file.type,
@@ -2251,23 +2088,15 @@ async function sendEncryptedFile(file) {
 
       // Show locally
       appendMessage({
-        text: isViewOnce ? '👁️ View Once File Sent' : dataUrl,
+        text: dataUrl,
         isSent: true,
         timestamp: Date.now(),
         messageId,
-        isViewOnce: isViewOnce,
         file: true,
         fileName: file.name,
         fileType: file.type,
         fileSize: file.size
       });
-
-      // Reset View Once toggle if active
-      if (state.viewOnceActive) {
-        state.viewOnceActive = false;
-        dom.viewOnceBtn.classList.remove('active');
-        dom.messageInput.placeholder = 'Type a message...';
-      }
     };
     reader.readAsDataURL(file);
   } catch (err) {
@@ -2331,7 +2160,7 @@ function init() {
     if (warningEl && warningEl.innerHTML.includes('Network Offline')) {
       warningEl.classList.add('hidden');
     }
-    // Instant foreground reconnect
+    // Instant foreground reconnect — handleWindowFocus is now module-scoped
     handleWindowFocus();
   });
   
@@ -2353,6 +2182,22 @@ function init() {
       e.returnValue = '';
     }
   });
+
+  // Prime AudioContext on first user interaction to bypass aggressive Safari/Chrome autoplay restrictions
+  const primeAudioContext = () => {
+    try {
+      const tempCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (tempCtx.state === 'suspended') {
+        tempCtx.resume().then(() => tempCtx.close());
+      } else {
+        tempCtx.close();
+      }
+    } catch (e) {}
+    document.removeEventListener('click', primeAudioContext);
+    document.removeEventListener('touchstart', primeAudioContext);
+  };
+  document.addEventListener('click', primeAudioContext);
+  document.addEventListener('touchstart', primeAudioContext);
 
   dom.usernameInput.focus();
 }

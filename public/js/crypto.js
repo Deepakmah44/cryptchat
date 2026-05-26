@@ -137,7 +137,7 @@ class CryptoEngine {
    * Generate a verification code from shared key (for visual verification)
    */
   async getVerificationCode() {
-    if (!this.sharedKey) return null;
+    if (!this.sharedKey || !this.keyPair) return null;
     const exported = await crypto.subtle.exportKey('raw', 
       await crypto.subtle.deriveKey(
         { name: 'ECDH', public: this.keyPair.publicKey },

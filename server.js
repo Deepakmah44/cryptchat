@@ -5,7 +5,9 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+
+// ── WebSocket Server with 16MB max payload for encrypted file sharing ──
+const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 * 1024 });
 
 // Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
@@ -44,11 +46,38 @@ function generateUserId() {
 function broadcastToRoom(roomCode, message, excludeWs = null) {
   const room = rooms.get(roomCode);
   if (!room) return;
+  // Update room activity timestamp
+  room.lastActivity = Date.now();
   room.users.forEach(user => {
-    if (user.ws !== excludeWs && user.ws.readyState === 1) {
+    if (user.ws && user.ws !== excludeWs && user.ws.readyState === 1) {
       user.ws.send(JSON.stringify(message));
     }
   });
+}
+
+// ── Per-connection rate limiter ──
+// Max 30 messages per 10 seconds per connection
+const RATE_LIMIT_WINDOW = 10000;
+const RATE_LIMIT_MAX = 30;
+
+function isRateLimited(ws) {
+  const now = Date.now();
+  if (!ws._rateLimitData) {
+    ws._rateLimitData = { count: 1, windowStart: now };
+    return false;
+  }
+  const data = ws._rateLimitData;
+  if (now - data.windowStart > RATE_LIMIT_WINDOW) {
+    // Reset window
+    data.count = 1;
+    data.windowStart = now;
+    return false;
+  }
+  data.count++;
+  if (data.count > RATE_LIMIT_MAX) {
+    return true;
+  }
+  return false;
 }
 
 wss.on('connection', (ws) => {
@@ -63,6 +92,14 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Rate limit check (allow ping and join/create freely)
+    if (msg.type !== 'ping' && msg.type !== 'create-room' && msg.type !== 'join-room') {
+      if (isRateLimited(ws)) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Too many messages. Please slow down.' }));
+        return;
+      }
+    }
+
     switch (msg.type) {
 
       case 'create-room': {
@@ -73,7 +110,7 @@ wss.on('connection', (ws) => {
         }
         currentUser = { id: generateUserId(), username: msg.username, ws };
         currentRoom = roomCode;
-        rooms.set(roomCode, { users: [currentUser], createdAt: Date.now() });
+        rooms.set(roomCode, { users: [currentUser], createdAt: Date.now(), lastActivity: Date.now() });
         ws.send(JSON.stringify({
           type: 'room-created',
           roomCode,
@@ -87,7 +124,7 @@ wss.on('connection', (ws) => {
         let room = rooms.get(roomCode);
         if (!room) {
           if (roomCode.startsWith('P')) {
-            room = { users: [], createdAt: Date.now() };
+            room = { users: [], createdAt: Date.now(), lastActivity: Date.now() };
             rooms.set(roomCode, room);
           } else {
             ws.send(JSON.stringify({ type: 'error', message: 'Room not found. Check room code.' }));
@@ -111,6 +148,7 @@ wss.on('connection', (ws) => {
           existingUser.ws = ws;
           currentUser = existingUser;
           currentRoom = roomCode;
+          room.lastActivity = Date.now();
 
           const peer = room.users.find(u => u.id !== currentUser.id);
 
@@ -122,6 +160,14 @@ wss.on('connection', (ws) => {
             peerUsername: peer ? peer.username : null,
             resumed: true
           }));
+
+          // Notify peer that the user reconnected
+          if (peer && peer.ws && peer.ws.readyState === 1) {
+            peer.ws.send(JSON.stringify({
+              type: 'peer-reconnected',
+              peerUsername: currentUser.username
+            }));
+          }
 
           // Send stored room messages (resending ensures client captures anything missed)
           const allMessages = loadMessages();
@@ -143,6 +189,7 @@ wss.on('connection', (ws) => {
         currentUser = { id: generateUserId(), username: msg.username, ws };
         currentRoom = roomCode;
         room.users.push(currentUser);
+        room.lastActivity = Date.now();
 
         const peer = room.users.find(u => u.id !== currentUser.id);
 
@@ -165,7 +212,7 @@ wss.on('connection', (ws) => {
         }
 
         // Notify existing user that peer joined
-        if (peer && peer.ws.readyState === 1) {
+        if (peer && peer.ws && peer.ws.readyState === 1) {
           peer.ws.send(JSON.stringify({
             type: 'peer-joined',
             peerUsername: currentUser.username
@@ -175,6 +222,7 @@ wss.on('connection', (ws) => {
       }
 
       case 'key-exchange': {
+        if (!currentRoom || !currentUser) return;
         // Relay the public key to the other user in the room
         broadcastToRoom(currentRoom, {
           type: 'key-exchange',
@@ -185,6 +233,7 @@ wss.on('connection', (ws) => {
       }
 
       case 'encrypted-message': {
+        if (!currentRoom || !currentUser) return;
         const savedMsg = {
           ...msg,
           type: 'encrypted-message',
@@ -205,6 +254,7 @@ wss.on('connection', (ws) => {
       }
 
       case 'typing': {
+        if (!currentRoom || !currentUser) return;
         broadcastToRoom(currentRoom, {
           type: 'typing',
           from: currentUser.username,
@@ -214,6 +264,7 @@ wss.on('connection', (ws) => {
       }
 
       case 'message-delivered': {
+        if (!currentRoom || !currentUser) return;
         broadcastToRoom(currentRoom, {
           type: 'message-delivered',
           messageId: msg.messageId
@@ -222,10 +273,11 @@ wss.on('connection', (ws) => {
       }
 
       case 'message-opened': {
-        // Delete message from persistent store upon opening (Snapchat-style)
-        const allMessages = loadMessages();
-        const updatedMessages = allMessages.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId));
-        saveMessages(updatedMessages);
+        if (!currentRoom || !currentUser) return;
+        // Delete message from persistent store upon opening
+        const allMsgsOpened = loadMessages();
+        const updatedMsgsOpened = allMsgsOpened.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId));
+        saveMessages(updatedMsgsOpened);
 
         broadcastToRoom(currentRoom, {
           type: 'message-opened',
@@ -235,10 +287,11 @@ wss.on('connection', (ws) => {
       }
 
       case 'message-read': {
-        // Delete message from persistent store upon reading (Snapchat-style)
-        const allMessages = loadMessages();
-        const updatedMessages = allMessages.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId));
-        saveMessages(updatedMessages);
+        if (!currentRoom || !currentUser) return;
+        // Delete message from persistent store upon reading
+        const allMsgsRead = loadMessages();
+        const updatedMsgsRead = allMsgsRead.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId));
+        saveMessages(updatedMsgsRead);
 
         broadcastToRoom(currentRoom, {
           type: 'message-read',
@@ -248,14 +301,15 @@ wss.on('connection', (ws) => {
       }
 
       case 'edit-message': {
+        if (!currentRoom || !currentUser) return;
         // Update the stored message with new encrypted content
-        const allMessages = loadMessages();
-        const msgIndex = allMessages.findIndex(m => m.roomCode === currentRoom && m.messageId === msg.messageId && m.from === currentUser.id);
+        const allMsgsEdit = loadMessages();
+        const msgIndex = allMsgsEdit.findIndex(m => m.roomCode === currentRoom && m.messageId === msg.messageId && m.from === currentUser.id);
         if (msgIndex !== -1) {
-          allMessages[msgIndex].iv = msg.iv;
-          allMessages[msgIndex].ciphertext = msg.ciphertext;
-          allMessages[msgIndex].edited = true;
-          saveMessages(allMessages);
+          allMsgsEdit[msgIndex].iv = msg.iv;
+          allMsgsEdit[msgIndex].ciphertext = msg.ciphertext;
+          allMsgsEdit[msgIndex].edited = true;
+          saveMessages(allMsgsEdit);
         }
         // Broadcast edit to peer
         broadcastToRoom(currentRoom, {
@@ -269,10 +323,11 @@ wss.on('connection', (ws) => {
       }
 
       case 'unsend-message': {
+        if (!currentRoom || !currentUser) return;
         // Delete from stored messages
-        const allMessages = loadMessages();
-        const updatedMessages = allMessages.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId && m.from === currentUser.id));
-        saveMessages(updatedMessages);
+        const allMsgsUnsend = loadMessages();
+        const updatedMsgsUnsend = allMsgsUnsend.filter(m => !(m.roomCode === currentRoom && m.messageId === msg.messageId && m.from === currentUser.id));
+        saveMessages(updatedMsgsUnsend);
         // Broadcast unsend to peer
         broadcastToRoom(currentRoom, {
           type: 'unsend-message',
@@ -287,11 +342,54 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'destroy-old-messages': {
+        if (!currentRoom || !currentUser) return;
+        const threshold = Date.now() - 600000; // 10 minutes ago in ms
+        const allMsgsDestroy = loadMessages();
+        
+        // Delete messages older than 10 minutes for this specific room
+        const updatedMsgsDestroy = allMsgsDestroy.filter(m => !(m.roomCode === currentRoom && m.timestamp < threshold));
+        saveMessages(updatedMsgsDestroy);
+        
+        // Broadcast to everyone in the room (including the sender)
+        broadcastToRoom(currentRoom, {
+          type: 'old-messages-destroyed',
+          threshold: threshold
+        });
+        break;
+      }
+
+      case 'leave-room': {
+        if (currentRoom && currentUser) {
+          const room = rooms.get(currentRoom);
+          if (room) {
+            // Clear any pending disconnect timeout
+            if (currentUser.disconnectTimeout) {
+              clearTimeout(currentUser.disconnectTimeout);
+              currentUser.disconnectTimeout = null;
+            }
+            // Remove user immediately since they explicitly chose to leave
+            room.users = room.users.filter(u => u.id !== currentUser.id);
+            broadcastToRoom(currentRoom, {
+              type: 'peer-left',
+              username: currentUser.username
+            });
+            if (room.users.length === 0) {
+              rooms.delete(currentRoom);
+            }
+          }
+          currentRoom = null;
+          currentUser = null;
+        }
+        break;
+      }
+
       case 'call-invite':
       case 'call-accept':
       case 'call-decline':
       case 'call-hangup':
       case 'webrtc-signal': {
+        if (!currentRoom || !currentUser) return;
         broadcastToRoom(currentRoom, msg, ws);
         break;
       }
@@ -299,20 +397,32 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (currentRoom && currentUser) {
+    if (currentUser && currentRoom) {
+      currentUser.ws = null; // Mark socket as closed
+
       const room = rooms.get(currentRoom);
       if (room) {
-        // Set disconnect timeout to allow grace period for reconnecting
-        currentUser.disconnectTimeout = setTimeout(() => {
-          room.users = room.users.filter(u => u.id !== currentUser.id);
-          broadcastToRoom(currentRoom, {
+        // Set a 15-second disconnect timeout — if the user doesn't reconnect,
+        // notify the peer and remove the user from the room
+        const disconnectedUser = currentUser;
+        const disconnectedRoom = currentRoom;
+
+        disconnectedUser.disconnectTimeout = setTimeout(() => {
+          const r = rooms.get(disconnectedRoom);
+          if (!r) return;
+
+          // Broadcast peer-left to the remaining user
+          broadcastToRoom(disconnectedRoom, {
             type: 'peer-left',
-            username: currentUser.username
+            username: disconnectedUser.username
           });
-          if (room.users.length === 0) {
-            rooms.delete(currentRoom);
+
+          // Remove the disconnected user from the room
+          r.users = r.users.filter(u => u.id !== disconnectedUser.id);
+          if (r.users.length === 0) {
+            rooms.delete(disconnectedRoom);
           }
-        }, 10000); // 10 seconds grace period
+        }, 15000);
       }
     }
   });
@@ -322,14 +432,31 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Cleanup stale rooms every 30 minutes
+// Cleanup stale rooms & auto-purge old messages every 30 minutes
 setInterval(() => {
   const now = Date.now();
+
+  // ── Room cleanup ──
   rooms.forEach((room, code) => {
-    if (room.users.length === 0 && now - room.createdAt > 1800000) {
+    // Clean up if all users in the room have closed connections for over 2 hours since last activity
+    const allDisconnected = room.users.every(u => !u.ws || u.ws.readyState !== 1);
+    if (allDisconnected && now - room.lastActivity > 7200000) {
       rooms.delete(code);
     }
   });
+
+  // ── Auto-purge messages older than 24 hours ──
+  try {
+    const allMessages = loadMessages();
+    const dayAgo = now - 86400000;
+    const freshMessages = allMessages.filter(m => m.timestamp && m.timestamp > dayAgo);
+    if (freshMessages.length < allMessages.length) {
+      saveMessages(freshMessages);
+      console.log(`[Auto-purge] Cleaned ${allMessages.length - freshMessages.length} stale messages.`);
+    }
+  } catch (e) {
+    console.error('Auto-purge failed:', e);
+  }
 }, 1800000);
 
 const PORT = process.env.PORT || 3000;
