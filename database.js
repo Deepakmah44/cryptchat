@@ -42,7 +42,8 @@ module.exports = {
       uuid,
       keyHash,
       activeConnections: 0,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      lastActivity: Date.now()
     };
     saveDB(db);
     return db.rooms[uuid];
@@ -51,6 +52,7 @@ module.exports = {
     const db = loadDB();
     if (db.rooms[uuid]) {
       db.rooms[uuid].activeConnections = Math.max(0, db.rooms[uuid].activeConnections + delta);
+      db.rooms[uuid].lastActivity = Date.now();
       saveDB(db);
       return db.rooms[uuid];
     }
@@ -117,6 +119,23 @@ module.exports = {
     const initialCount = db.messages.length;
     db.messages = db.messages.filter(m => m.createdAt > tenMinutesAgo);
     if (db.messages.length !== initialCount) {
+      saveDB(db);
+    }
+  },
+  purgeInactiveRooms() {
+    const db = loadDB();
+    const thirtyDaysAgo = Date.now() - 2592000000; // 30 Days in ms
+    let purged = false;
+    for (const uuid in db.rooms) {
+      const room = db.rooms[uuid];
+      const activity = room.lastActivity || room.createdAt;
+      if (activity < thirtyDaysAgo && room.activeConnections === 0) {
+        delete db.rooms[uuid];
+        db.messages = db.messages.filter(m => m.roomUuid !== uuid);
+        purged = true;
+      }
+    }
+    if (purged) {
       saveDB(db);
     }
   }

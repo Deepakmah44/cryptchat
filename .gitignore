@@ -5,4 +5,5 @@ yarn-error.log*
 .env
 .DS_Store
 messages.json
+database.json
 .git/

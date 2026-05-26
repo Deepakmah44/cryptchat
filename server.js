@@ -22,7 +22,7 @@ function generateUserId() {
 }
 
 function generateSecureKey() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let result = '';
   const bytes = crypto.randomBytes(4);
   for (let i = 0; i < 4; i++) {
@@ -411,12 +411,13 @@ wss.on('connection', (ws, req) => {
   ws.on('error', () => {});
 });
 
-// Purge expired TTL messages automatically every 30 seconds
+// Purge expired TTL messages and inactive rooms automatically every 30 seconds
 setInterval(() => {
   try {
     db.purgeExpiredMessages();
+    db.purgeInactiveRooms();
   } catch (e) {
-    console.error('Auto-purge TTL messages failed:', e);
+    console.error('Auto-purge background task failed:', e);
   }
 }, 30000);
 
