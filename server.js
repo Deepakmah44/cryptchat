@@ -408,7 +408,7 @@ wss.on('connection', (ws, req) => {
             activeSockets.delete(disconnectedRoom);
             db.deleteRoom(disconnectedRoom);
           }
-        }, 15000);
+        }, 60000);
       }
     }
   });
