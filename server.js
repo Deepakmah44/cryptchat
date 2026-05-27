@@ -416,3 +416,6 @@ server.listen(PORT, () => {
   console.log(`     → Local:   http://localhost:${PORT}`);
   console.log(`     → Network: http://0.0.0.0:${PORT}\n`);
 });
+
+// Live reload trigger: 2026-05-27T11:18:00
+
