@@ -287,13 +287,13 @@ function startHeartbeat() {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       send({ type: 'ping' });
       
-      // If we haven't received a pong in 35 seconds, connection is dead
-      if (Date.now() - lastPong > 35000) {
+      // Aggressive heartbeat check: if no response in 15 seconds, trigger instant reconnect
+      if (Date.now() - lastPong > 15000) {
         console.warn('WebSocket heartbeat timeout. Reconnecting...');
         state.ws.close(); // Triggers onclose and reconnection automatically
       }
     }
-  }, 15000); // Ping every 15 seconds
+  }, 7000); // Ping every 7 seconds for ultra-responsive connection detection
   
   state._heartbeatReset = () => {
     lastPong = Date.now();
@@ -349,7 +349,12 @@ function attemptReconnect() {
   if (state.roomCode) {
     updateConnectionStatus('offline', 'Disconnected');
   }
-  const delay = Math.min(1000 * Math.pow(2, Math.min(state.reconnectAttempts, 8)), 30000);
+  
+  // Ultra-rapid Aggressive Reconnection backoff
+  // First attempt triggers in 500ms (0.5 seconds), subsequent scale slightly but cap at a strict 3000ms max (3 seconds)
+  const delay = state.reconnectAttempts === 1 
+    ? 500 
+    : Math.min(1000 * Math.pow(1.5, state.reconnectAttempts), 3000);
   
   if (state.reconnectTimeoutId) {
     clearTimeout(state.reconnectTimeoutId);
@@ -388,6 +393,9 @@ async function handleServerMessage(msg) {
       state.upperKey = msg.upperKey;
       state.lowerKey = msg.lowerKey;
       
+      // Save session to storage for persistence across reloads/background sleep
+      saveSessionToStorage();
+      
       // Render one-time visualization keys
       document.getElementById('created-upper-key').textContent = msg.upperKey;
       document.getElementById('created-lower-key').textContent = msg.lowerKey;
@@ -411,6 +419,16 @@ async function handleServerMessage(msg) {
       state.roomCode = msg.roomCode;
       state.userId = msg.userId;
       state.peerUsername = msg.peerUsername;
+      
+      // Save session to storage for persistence across reloads/background sleep
+      saveSessionToStorage();
+      
+      // Reset connect button states
+      dom.personalConnectBtn.disabled = false;
+      dom.personalConnectBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> Connect Privately`;
+      dom.joinRoomBtn.disabled = false;
+      dom.joinRoomBtn.innerHTML = `Join Private Room`;
+      
       switchToChat();
       
       if (msg.resumed) {
@@ -573,6 +591,13 @@ async function handleServerMessage(msg) {
       break;
 
     case 'error':
+      // Clear persistent session storage on join error
+      sessionStorage.removeItem('cryptchat_room_code');
+      sessionStorage.removeItem('cryptchat_user_id');
+      sessionStorage.removeItem('cryptchat_username');
+      sessionStorage.removeItem('cryptchat_secret_phrase');
+      sessionStorage.removeItem('cryptchat_combined_key');
+
       // For personal chat: if room doesn't exist, create it automatically
       if (state._personalRoomCode && msg.message.includes('not found')) {
         send({ type: 'create-room', roomCode: state._personalRoomCode, username: state.username });
@@ -581,11 +606,14 @@ async function handleServerMessage(msg) {
       }
       state._personalRoomCode = null;
       showJoinError(msg.message);
-      // Reset personal connect button if it was used
+      
+      // Reset connect button states
       if (dom.personalConnectBtn.disabled) {
         dom.personalConnectBtn.disabled = false;
         dom.personalConnectBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> Connect Privately`;
       }
+      dom.joinRoomBtn.disabled = false;
+      dom.joinRoomBtn.innerHTML = `Join Private Room`;
       break;
   }
 }
@@ -1253,6 +1281,14 @@ function switchToChat() {
 function switchToJoin() {
   dom.chatScreen.classList.remove('active');
   dom.joinScreen.classList.add('active');
+  
+  // Clear persistent session storage on explicit leave
+  sessionStorage.removeItem('cryptchat_room_code');
+  sessionStorage.removeItem('cryptchat_user_id');
+  sessionStorage.removeItem('cryptchat_username');
+  sessionStorage.removeItem('cryptchat_secret_phrase');
+  sessionStorage.removeItem('cryptchat_combined_key');
+
   // Reset state
   state.roomCode = null;
   state.userId = null;
@@ -2773,6 +2809,81 @@ function init() {
   document.addEventListener('touchstart', primeAudioContext, { passive: true });
 
   dom.usernameInput.focus();
+  
+  // Attempt to restore persistent session across refreshes/background discards
+  restoreSavedSession();
+}
+
+// ═══════════════════════════════════════════
+// PERSISTENT SESSION MANAGEMENT
+// ═══════════════════════════════════════════
+function saveSessionToStorage() {
+  if (state.roomCode) {
+    sessionStorage.setItem('cryptchat_room_code', state.roomCode);
+    sessionStorage.setItem('cryptchat_user_id', state.userId);
+    sessionStorage.setItem('cryptchat_username', state.username);
+    if (state.secretPhrase) {
+      sessionStorage.setItem('cryptchat_secret_phrase', state.secretPhrase);
+    }
+    if (state.combinedKey) {
+      sessionStorage.setItem('cryptchat_combined_key', state.combinedKey);
+    }
+  }
+}
+
+async function restoreSavedSession() {
+  const savedRoomCode = sessionStorage.getItem('cryptchat_room_code');
+  const savedUserId = sessionStorage.getItem('cryptchat_user_id');
+  const savedUsername = sessionStorage.getItem('cryptchat_username');
+  const savedSecretPhrase = sessionStorage.getItem('cryptchat_secret_phrase');
+  const savedCombinedKey = sessionStorage.getItem('cryptchat_combined_key');
+
+  if (savedRoomCode && savedUsername) {
+    console.log('Restoring saved session for room:', savedRoomCode);
+    state.roomCode = savedRoomCode;
+    state.userId = savedUserId;
+    state.username = savedUsername;
+    
+    // Fill the UI fields
+    dom.usernameInput.value = savedUsername;
+    if (savedSecretPhrase) {
+      dom.secretPhraseInput.value = savedSecretPhrase;
+      state.secretPhrase = savedSecretPhrase;
+    }
+    if (savedCombinedKey) {
+      dom.keyInput1.value = savedCombinedKey.substring(0, 4);
+      dom.keyInput2.value = savedCombinedKey.substring(4, 8);
+      state.combinedKey = savedCombinedKey;
+    }
+
+    try {
+      // Show reconnecting states
+      if (savedRoomCode.startsWith('P')) {
+        dom.personalConnectBtn.disabled = true;
+        dom.personalConnectBtn.textContent = 'Restoring...';
+      } else {
+        dom.joinRoomBtn.disabled = true;
+        dom.joinRoomBtn.textContent = 'Restoring...';
+      }
+
+      await connectWebSocket();
+      
+      // Send rejoin message to resume session
+      send({
+        type: 'join-room',
+        roomCode: savedRoomCode,
+        username: savedUsername,
+        userId: savedUserId
+      });
+    } catch (err) {
+      console.error('Session restoration WebSocket connection failed:', err);
+      // Reset buttons
+      dom.personalConnectBtn.disabled = false;
+      dom.personalConnectBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> Connect Privately`;
+      dom.joinRoomBtn.disabled = false;
+      dom.joinRoomBtn.innerHTML = `Join Private Room`;
+    }
+  }
 }
 
 init();
