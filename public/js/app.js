@@ -376,6 +376,20 @@ async function handleServerMessage(msg) {
         addSystemNotice('Room ready. Waiting for peer to connect.');
       }
       
+      if (msg.roomCode.startsWith('P')) {
+        if (msg.peerUsername) {
+          try {
+            await state.crypto.generateKeyPair();
+            const publicKey = await state.crypto.exportPublicKey();
+            send({ type: 'key-exchange', publicKey });
+          } catch (err) {
+            console.error('ECDH key generation failed:', err);
+          }
+        }
+        flushPendingSendQueue();
+        break;
+      }
+      
       // Symmetrically derive E2EE key from the inputted combined key
       await state.crypto.deriveKeyFromSecret(state.combinedKey, msg.roomCode);
       state.crypto.setRoomContext(msg.roomCode);
