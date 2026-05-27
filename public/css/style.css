@@ -2213,3 +2213,66 @@ input[type="password"] {
   cursor: not-allowed;
 }
 
+/* ═══════════════ PROXIMITY SCREEN OVERLAY ═══════════════ */
+.call-proximity-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: #000000;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.call-proximity-overlay:not(.hidden) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.proximity-message-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: #444444;
+  text-align: center;
+  font-family: var(--font-family);
+  animation: proximityPulse 2s infinite ease-in-out;
+}
+
+.proximity-message-box svg {
+  stroke: #222222;
+}
+
+.proximity-message-box p {
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+.proximity-message-box span {
+  font-size: 0.75rem;
+  color: #333333;
+}
+
+@keyframes proximityPulse {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
+

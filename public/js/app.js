@@ -38,6 +38,9 @@ const state = {
   callStartTime: null,
   pendingWebRTCSignals: [],
   callTimerInterval: null,
+  cameraFacingMode: 'user',
+  pendingSendQueue: [],
+  proximityBlackout: false,
 };
 
 // ── DOM Refs ──
@@ -96,8 +99,10 @@ const dom = {
   callAcceptBtn: $('#call-accept-btn'),
   callMuteBtn: $('#call-mute-btn'),
   callVideoToggleBtn: $('#call-video-toggle-btn'),
+  callFlipCameraBtn: $('#call-flip-camera-btn'),
   callSpeakerBtn: $('#call-speaker-btn'),
   callHangupBtn: $('#call-hangup-btn'),
+  callProximityOverlay: $('#call-proximity-overlay'),
   // Emoji Picker DOM Refs
   emojiBtn: $('#emoji-btn'),
   emojiPickerPanel: $('#emoji-picker-panel'),
@@ -339,6 +344,7 @@ async function handleServerMessage(msg) {
       updateEncryptionStatus(true);
       enableInput();
       addSystemNotice('🔒 E2E Encrypted');
+      flushPendingSendQueue();
 
       // Reset button
       dom.createRoomBtn.disabled = false;
@@ -377,6 +383,7 @@ async function handleServerMessage(msg) {
       updateEncryptionStatus(true);
       enableInput();
       addSystemNotice('🔒 E2E Encrypted');
+      flushPendingSendQueue();
       break;
 
     case 'peer-joined':
@@ -592,19 +599,29 @@ async function sendMessage() {
 
   try {
     const { iv, ciphertext } = await state.crypto.encrypt(text);
-    send({
+    const isOffline = !state.ws || state.ws.readyState !== WebSocket.OPEN;
+    
+    const payload = {
       type: 'encrypted-message',
       iv,
       ciphertext,
       messageId
-    });
+    };
+
+    if (isOffline) {
+      if (!state.pendingSendQueue) state.pendingSendQueue = [];
+      state.pendingSendQueue.push(payload);
+    } else {
+      send(payload);
+    }
 
     // Show locally
     appendMessage({
       text,
       isSent: true,
       timestamp: Date.now(),
-      messageId
+      messageId,
+      isSending: isOffline
     });
 
     dom.messageInput.value = '';
@@ -702,7 +719,7 @@ async function handleMessageHistory(messages) {
 // ═══════════════════════════════════════════
 // UI — MESSAGES
 // ═══════════════════════════════════════════
-function appendMessage({ text, isSent, senderName, timestamp, messageId, file, fileName, fileType, fileSize }) {
+function appendMessage({ text, isSent, senderName, timestamp, messageId, file, fileName, fileType, fileSize, isSending }) {
   const wrapper = document.createElement('div');
   wrapper.className = `message-wrapper ${isSent ? 'sent' : 'received'}`;
   if (messageId) wrapper.dataset.messageId = messageId;
@@ -714,9 +731,15 @@ function appendMessage({ text, isSent, senderName, timestamp, messageId, file, f
   let metaHtml = `<div class="message-meta-whatsapp">`;
   metaHtml += `<span class="message-time-whatsapp">${time}</span>`;
   if (isSent) {
-    metaHtml += `<span class="message-status message-status-whatsapp" data-mid="${messageId || ''}">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-    </span>`;
+    if (isSending) {
+      metaHtml += `<span class="message-status message-status-whatsapp sending" data-mid="${messageId || ''}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </span>`;
+    } else {
+      metaHtml += `<span class="message-status message-status-whatsapp" data-mid="${messageId || ''}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </span>`;
+    }
   }
   metaHtml += `</div>`;
 
@@ -838,6 +861,27 @@ function markMessageRead(messageId) {
     statusEl.classList.remove('delivered');
     statusEl.classList.add('read');
     statusEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="18 6 9 17 4 12"/><polyline points="22 6 13 17" /></svg>`;
+  }
+}
+
+function markMessageSent(messageId) {
+  const wrapper = document.querySelector(`[data-message-id="${messageId}"]`);
+  if (!wrapper) return;
+  const statusEl = wrapper.querySelector('.message-status');
+  if (statusEl && statusEl.classList.contains('sending')) {
+    statusEl.classList.remove('sending');
+    statusEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  }
+}
+
+function flushPendingSendQueue() {
+  if (state.pendingSendQueue && state.pendingSendQueue.length > 0) {
+    console.log(`Flushing ${state.pendingSendQueue.length} pending messages...`);
+    state.pendingSendQueue.forEach(payload => {
+      send(payload);
+      markMessageSent(payload.messageId);
+    });
+    state.pendingSendQueue = [];
   }
 }
 
@@ -1567,7 +1611,15 @@ function initEventListeners() {
   dom.callHangupBtn.addEventListener('click', hangupCall);
   dom.callMuteBtn.addEventListener('click', toggleMute);
   dom.callVideoToggleBtn.addEventListener('click', toggleVideo);
+  if (dom.callFlipCameraBtn) {
+    dom.callFlipCameraBtn.addEventListener('click', flipCamera);
+  }
   dom.callSpeakerBtn.addEventListener('click', toggleLoudspeaker);
+  if (dom.callProximityOverlay) {
+    dom.callProximityOverlay.addEventListener('dblclick', () => {
+      toggleProximityOverlay(false);
+    });
+  }
 
   // ── File Attachment Trigger ──
   if (dom.attachBtn) {
@@ -1932,6 +1984,10 @@ async function setupWebRTC() {
 
     // Apply absolute audio routing (Earpiece for audio, Speaker for video)
     applyAudioRouting();
+
+    if (state.callType === 'audio') {
+      window.addEventListener('deviceorientation', handleDeviceOrientation);
+    }
   };
 
   state.localStream.getTracks().forEach(track => {
@@ -2004,6 +2060,76 @@ function toggleVideo() {
     } else {
       dom.localVideoPlaceholder.classList.remove('hidden');
     }
+  }
+}
+
+function toggleProximityOverlay(show) {
+  if (!dom.callProximityOverlay) return;
+  if (show) {
+    dom.callProximityOverlay.classList.remove('hidden');
+    state.proximityBlackout = true;
+  } else {
+    dom.callProximityOverlay.classList.add('hidden');
+    state.proximityBlackout = false;
+  }
+}
+
+function handleDeviceOrientation(event) {
+  if (state.callState !== 'connected' || state.speakerMode !== 'earpiece' || state.callType !== 'audio') {
+    toggleProximityOverlay(false);
+    return;
+  }
+  if (event && event.beta !== null) {
+    const beta = Math.abs(event.beta);
+    if (beta > 70) {
+      toggleProximityOverlay(true);
+    } else if (beta < 45) {
+      toggleProximityOverlay(false);
+    }
+  }
+}
+
+async function flipCamera() {
+  if (state.callType !== 'video' || !state.localStream || !state.peerConnection) return;
+  const videoTracks = state.localStream.getVideoTracks();
+  if (videoTracks.length === 0) return;
+
+  dom.callFlipCameraBtn.disabled = true;
+  const originalContent = dom.callFlipCameraBtn.innerHTML;
+  dom.callFlipCameraBtn.innerHTML = `<svg class="spin-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>`;
+
+  try {
+    state.cameraFacingMode = state.cameraFacingMode === 'user' ? 'environment' : 'user';
+    const constraints = {
+      video: {
+        facingMode: state.cameraFacingMode,
+        width: { ideal: 1280, min: 640 },
+        height: { ideal: 720, min: 480 }
+      }
+    };
+
+    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const newTrack = newStream.getVideoTracks()[0];
+
+    const senders = state.peerConnection.getSenders();
+    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+    if (videoSender) {
+      await videoSender.replaceTrack(newTrack);
+    }
+
+    videoTracks.forEach(track => track.stop());
+
+    state.localStream.removeTrack(videoTracks[0]);
+    state.localStream.addTrack(newTrack);
+    dom.localVideo.srcObject = state.localStream;
+    addCallSystemNotice('📷 Camera flipped successfully', false);
+  } catch (err) {
+    console.error('Camera flip failed:', err);
+    state.cameraFacingMode = state.cameraFacingMode === 'user' ? 'environment' : 'user';
+    addCallSystemNotice('⚠️ Camera flip failed', true);
+  } finally {
+    dom.callFlipCameraBtn.innerHTML = originalContent;
+    dom.callFlipCameraBtn.disabled = false;
   }
 }
 
@@ -2130,6 +2256,9 @@ function resetCallUI() {
   stopRingtone();
   stopCallTimer();
   
+  window.removeEventListener('deviceorientation', handleDeviceOrientation);
+  toggleProximityOverlay(false);
+  
   if (state.callStartTime) {
     const duration = Date.now() - state.callStartTime;
     const durationStr = formatDuration(duration);
@@ -2210,7 +2339,8 @@ async function sendEncryptedFile(file) {
       
       const { iv, ciphertext } = await state.crypto.encrypt(dataUrl);
       
-      send({
+      const isOffline = !state.ws || state.ws.readyState !== WebSocket.OPEN;
+      const payload = {
         type: 'encrypted-message',
         iv,
         ciphertext,
@@ -2219,7 +2349,14 @@ async function sendEncryptedFile(file) {
         fileName: file.name,
         fileType: file.type,
         fileSize: file.size
-      });
+      };
+
+      if (isOffline) {
+        if (!state.pendingSendQueue) state.pendingSendQueue = [];
+        state.pendingSendQueue.push(payload);
+      } else {
+        send(payload);
+      }
 
       // Show locally
       appendMessage({
@@ -2230,7 +2367,8 @@ async function sendEncryptedFile(file) {
         file: true,
         fileName: file.name,
         fileType: file.type,
-        fileSize: file.size
+        fileSize: file.size,
+        isSending: isOffline
       });
     };
     reader.readAsDataURL(file);
