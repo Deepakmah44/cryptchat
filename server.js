@@ -125,6 +125,17 @@ wss.on('connection', (ws, req) => {
         let roomCode = msg.roomCode;
         let room;
 
+        // IP Rate Limiting Check (Brute-force lockout & CPU exhaustion protection)
+        const ipLimit = db.getRateLimit(clientIp);
+        if (ipLimit.failedAttempts >= 5 && (Date.now() - ipLimit.lastAttempt) < 900000) {
+          const timeLeft = Math.ceil((900000 - (Date.now() - ipLimit.lastAttempt)) / 60000);
+          ws.send(JSON.stringify({ 
+            type: 'error', 
+            message: `Too many failed attempts. Try again in ${timeLeft} minutes.` 
+          }));
+          return;
+        }
+
         // Path A: Secure Direct (Starts with 'P')
         if (roomCode && roomCode.startsWith('P')) {
           room = db.getRoom(roomCode);
@@ -140,11 +151,16 @@ wss.on('connection', (ws, req) => {
           room = db.getRoomByKeyHash(incomingHash);
           
           if (!room) {
+            db.recordFailedAttempt(clientIp);
             ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
             return;
           }
           roomCode = room.uuid;
         }
+
+        // Authentication success: reset the IP rate limit counter
+        db.clearRateLimit(clientIp);
+
 
         // Check active connection capacity
         if (room.activeConnections >= 2) {
