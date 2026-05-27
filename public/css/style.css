@@ -2118,3 +2118,98 @@ input[type="password"] {
 .call-overlay.video-active .audio-call-ui {
   display: none; /* Hide standard ripples */
 }
+
+/* Reconnecting Banner */
+.reconnecting-banner {
+  position: absolute;
+  top: 85px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(220, 38, 38, 0.12); /* transparent red-glass */
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(239, 68, 68, 0.4); /* soft red border */
+  border-radius: var(--radius-lg);
+  padding: 10px 20px;
+  box-shadow: 0 8px 32px rgba(220, 38, 38, 0.15);
+  animation: slideDownIn 0.3s cubic-bezier(0.16, 1, 0.3, 1), pulseBorder 2s infinite;
+  pointer-events: auto;
+  max-width: 90%;
+  width: auto;
+}
+
+.reconnecting-banner.hidden {
+  display: none !important;
+}
+
+.banner-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.banner-icon {
+  font-size: 1.1rem;
+}
+
+.banner-text {
+  font-size: 0.88rem;
+  color: #fca5a5; /* warm light red */
+  font-weight: 500;
+  letter-spacing: 0.2px;
+}
+
+.banner-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(252, 165, 165, 0.3);
+  border-top-color: #ef4444;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes slideDownIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulseBorder {
+  0%, 100% {
+    border-color: rgba(239, 68, 68, 0.4);
+    box-shadow: 0 8px 32px rgba(220, 38, 38, 0.15);
+  }
+  50% {
+    border-color: rgba(239, 68, 68, 0.8);
+    box-shadow: 0 8px 32px rgba(220, 38, 38, 0.3);
+  }
+}
+
+/* Offline state input bar styling */
+.chat-input-bar.offline {
+  border-top: 1px solid rgba(239, 68, 68, 0.3) !important;
+  background: rgba(15, 10, 20, 0.9) !important;
+}
+
+.chat-input-bar.offline #message-input {
+  color: rgba(239, 68, 68, 0.6) !important;
+  background: rgba(239, 68, 68, 0.05) !important;
+  border-color: rgba(239, 68, 68, 0.2) !important;
+  cursor: not-allowed;
+}
+

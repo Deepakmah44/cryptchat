@@ -285,6 +285,9 @@ function connectWebSocket() {
 
 function attemptReconnect() {
   state.reconnectAttempts++;
+  if (state.roomCode) {
+    updateConnectionStatus('offline', 'Disconnected');
+  }
   const delay = Math.min(1000 * Math.pow(2, Math.min(state.reconnectAttempts, 8)), 30000);
   
   if (state.reconnectTimeoutId) {
@@ -1106,9 +1109,46 @@ function switchToJoin() {
 // ═══════════════════════════════════════════
 // UI — STATUS UPDATES
 // ═══════════════════════════════════════════
+function showReconnectingBanner(attempt) {
+  let banner = document.getElementById('reconnecting-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'reconnecting-banner';
+    banner.className = 'reconnecting-banner glass-card';
+    banner.innerHTML = `
+      <div class="banner-content">
+        <span class="banner-icon">⚠️</span>
+        <span class="banner-text">Connection lost. Reconnecting securely... (Attempt <strong id="reconnect-count">${attempt}</strong>)</span>
+        <div class="banner-spinner"></div>
+      </div>
+    `;
+    dom.chatScreen.appendChild(banner);
+  } else {
+    const countEl = document.getElementById('reconnect-count');
+    if (countEl) countEl.textContent = attempt;
+    banner.classList.remove('hidden');
+  }
+}
+
+function hideReconnectingBanner() {
+  const banner = document.getElementById('reconnecting-banner');
+  if (banner) {
+    banner.classList.add('hidden');
+  }
+}
+
 function updateConnectionStatus(status, label) {
   dom.statusDot.className = `status-dot ${status}`;
   dom.statusLabel.textContent = label;
+
+  const inputBar = document.querySelector('.chat-input-bar');
+  if (status === 'offline') {
+    if (inputBar) inputBar.classList.add('offline');
+    showReconnectingBanner(state.reconnectAttempts || 1);
+  } else {
+    if (inputBar) inputBar.classList.remove('offline');
+    hideReconnectingBanner();
+  }
 }
 
 function updateEncryptionStatus(active) {
@@ -1143,7 +1183,12 @@ function disableInput() {
     dom.emojiPickerPanel.classList.add('hidden');
   }
   dom.sendBtn.disabled = true;
-  dom.messageInput.placeholder = 'Waiting for encrypted connection...';
+  
+  if (!state.isConnected && state.roomCode) {
+    dom.messageInput.placeholder = `⚠️ Offline: Reconnecting securely... (Attempt ${state.reconnectAttempts || 1})`;
+  } else {
+    dom.messageInput.placeholder = 'Waiting for encrypted connection...';
+  }
   
   if (dom.audioCallBtn) dom.audioCallBtn.disabled = true;
   if (dom.videoCallBtn) dom.videoCallBtn.disabled = true;
