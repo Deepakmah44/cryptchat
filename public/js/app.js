@@ -208,6 +208,11 @@ function initParticles() {
 // WEBSOCKET
 // ═══════════════════════════════════════════
 function getWsUrl() {
+  // Agar website github par chal rahi hai to naya render wala backend url use karo
+  if (location.hostname.includes('github.io')) {
+    // NOTE: Yahan par aapko apna actual Render WebSocket URL daalna padega
+    return 'wss://YOUR_RENDER_APP_NAME.onrender.com'; 
+  }
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${location.host}`;
 }
