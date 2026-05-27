@@ -405,12 +405,14 @@ async function handleServerMessage(msg) {
       dom.chatPeerName.textContent = msg.peerUsername;
       updateConnectionStatus('online', 'Online');
       addSystemNotice(`${msg.peerUsername} joined the room`);
+      // For private rooms (starts with 'P'), when peer joins, we initiate key exchange
+      if (state.roomCode.startsWith('P')) {
+        await initiateKeyExchange();
+      }
       break;
 
     case 'key-exchange':
-      if (!state.roomCode.startsWith('P')) {
-        await handleKeyExchange(msg.publicKey);
-      }
+      await handleKeyExchange(msg.publicKey);
       break;
 
     case 'message-history':
