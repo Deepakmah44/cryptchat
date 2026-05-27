@@ -99,6 +99,12 @@
         <!-- Room Code Tab -->
         <div class="tab-content" id="tab-room">
           <div class="room-actions">
+            <div class="input-group" style="margin-bottom: 15px; text-align: left;">
+              <label for="custom-room-code-input" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 5px; display: block;">Custom 8-Char Code (Optional)</label>
+              <input type="text" id="custom-room-code-input" placeholder="e.g. SECURE99" maxlength="8" autocomplete="off" spellcheck="false" style="width: 100%; text-transform: uppercase;">
+              <small style="color: #ff4d4d; font-size: 0.75rem; margin-top: 5px; display: block; font-weight: 500;">⚠️ WARNING: Don't share this code with anyone you don't trust!</small>
+            </div>
+            
             <button id="create-room-btn" class="btn btn-primary">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               + Create unique owned room

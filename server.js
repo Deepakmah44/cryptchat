@@ -156,10 +156,26 @@ wss.on('connection', (ws, req) => {
 
       case 'create-room': {
         const roomCode = crypto.randomUUID().substring(0, 8).toUpperCase();
-        const upperKey = generateSecureKey();
-        const lowerKey = generateSecureKey();
-        const combinedKey = upperKey + lowerKey;
+        
+        let upperKey, lowerKey, combinedKey;
+        if (msg.customCode && msg.customCode.length === 8) {
+          const cleanCode = msg.customCode.toUpperCase();
+          upperKey = cleanCode.substring(0, 4);
+          lowerKey = cleanCode.substring(4, 8);
+          combinedKey = cleanCode;
+        } else {
+          upperKey = generateSecureKey();
+          lowerKey = generateSecureKey();
+          combinedKey = upperKey + lowerKey;
+        }
+        
         const keyHash = hashKey(combinedKey);
+        
+        // Check if custom code is already in use
+        if (msg.customCode && db.getRoomByKeyHash(keyHash)) {
+          ws.send(JSON.stringify({ type: 'error', message: 'This custom code is already in use. Try a different one.' }));
+          return;
+        }
 
         // Save new room statelessly in database
         db.createRoom(roomCode, keyHash);
@@ -412,17 +428,42 @@ wss.on('connection', (ws, req) => {
               clearTimeout(currentUser.disconnectTimeout);
               currentUser.disconnectTimeout = null;
             }
-            activeSockets.set(currentRoom, activeUsers.filter(u => u.id !== currentUser.id));
-            db.updateRoomConnections(currentRoom, -1);
 
-            broadcastToRoom(currentRoom, {
-              type: 'peer-left',
-              username: currentUser.username
-            });
+            if (currentRoom.startsWith('P')) {
+              // For personal rooms, give a 3-minute grace period before destroying
+              broadcastToRoom(currentRoom, {
+                type: 'peer-left',
+                username: currentUser.username,
+                roomDestroyed: false
+              });
+              
+              const filtered = activeUsers.filter(u => u.id !== currentUser.id);
+              activeSockets.set(currentRoom, filtered);
+              db.updateRoomConnections(currentRoom, -1);
 
-            if (activeSockets.get(currentRoom).length === 0) {
-              activeSockets.delete(currentRoom);
-              db.deleteRoom(currentRoom);
+              if (filtered.length === 0) {
+                // Room is completely empty, schedule deletion after 3 minutes
+                const roomToDelete = currentRoom;
+                setTimeout(() => {
+                  if (!activeSockets.has(roomToDelete) || activeSockets.get(roomToDelete).length === 0) {
+                    activeSockets.delete(roomToDelete);
+                    db.deleteRoom(roomToDelete);
+                  }
+                }, 180000); // 3 minutes grace period
+              }
+            } else {
+              activeSockets.set(currentRoom, activeUsers.filter(u => u.id !== currentUser.id));
+              db.updateRoomConnections(currentRoom, -1);
+
+              broadcastToRoom(currentRoom, {
+                type: 'peer-left',
+                username: currentUser.username
+              });
+
+              if (activeSockets.get(currentRoom).length === 0) {
+                activeSockets.delete(currentRoom);
+                db.clearMessagesForRoom(currentRoom); // Wipe chat but keep room
+              }
             }
           }
           currentRoom = null;
@@ -450,6 +491,8 @@ wss.on('connection', (ws, req) => {
       if (activeUsers) {
         const disconnectedUser = currentUser;
         const disconnectedRoom = currentRoom;
+        
+        const timeoutDuration = disconnectedRoom.startsWith('P') ? 180000 : 60000;
 
         disconnectedUser.disconnectTimeout = setTimeout(() => {
           const uList = activeSockets.get(disconnectedRoom);
@@ -466,9 +509,13 @@ wss.on('connection', (ws, req) => {
 
           if (filtered.length === 0) {
             activeSockets.delete(disconnectedRoom);
-            db.deleteRoom(disconnectedRoom);
+            if (disconnectedRoom.startsWith('P')) {
+              db.deleteRoom(disconnectedRoom);
+            } else {
+              db.clearMessagesForRoom(disconnectedRoom); // Wipe chat but keep room
+            }
           }
-        }, 60000);
+        }, timeoutDuration);
       }
     }
   });

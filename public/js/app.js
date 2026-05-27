@@ -377,6 +377,7 @@ async function handleServerMessage(msg) {
       }
       
       if (msg.roomCode.startsWith('P')) {
+        enableInput();
         if (msg.peerUsername) {
           try {
             await state.crypto.generateKeyPair();
@@ -500,6 +501,11 @@ async function handleServerMessage(msg) {
       break;
 
     case 'peer-left':
+      if (msg.roomDestroyed) {
+        switchToJoin();
+        showJoinError('Chat ended and room has been destroyed securely.');
+        break;
+      }
       state.peerUsername = null;
       state.isEncrypted = false;
       state.crypto = new CryptoEngine();
@@ -553,11 +559,13 @@ async function handleKeyExchange(peerPublicKeyJwk) {
 
     const peerPublicKey = await state.crypto.importPeerPublicKey(peerPublicKeyJwk);
     await state.crypto.deriveSharedKey(peerPublicKey);
+    state.crypto.setRoomContext(state.roomCode);
     state.isEncrypted = true;
     
     updateEncryptionStatus(true);
     enableInput();
     addSystemNotice('🔒 End-to-end encryption activated');
+    await flushPendingSendQueue();
   } catch (err) {
     console.error('Key exchange failed:', err);
     addSystemNotice('⚠️ Encryption handshake failed. Please refresh.');
@@ -569,7 +577,9 @@ async function handleKeyExchange(peerPublicKeyJwk) {
 // ═══════════════════════════════════════════
 async function sendMessage() {
   const text = dom.messageInput.value.trim();
-  if (!text || !state.isEncrypted) return;
+  if (!text) return;
+  // If it's a private room (P-room) and no peer is connected yet, we allow queuing messages
+  if (!state.isEncrypted && !(state.roomCode && state.roomCode.startsWith('P'))) return;
 
   // ── EDIT MODE: Update existing message ──
   if (state.editingMessageId) {
@@ -614,9 +624,36 @@ async function sendMessage() {
   const messageId = `${state.userId}-${++state.messageIdCounter}`;
 
   try {
-    const { iv, ciphertext } = await state.crypto.encrypt(text);
     const isOffline = !state.ws || state.ws.readyState !== WebSocket.OPEN;
     
+    if (!state.isEncrypted) {
+      // If we are in a P-room waiting for peer to establish dynamic E2EE
+      if (state.roomCode && state.roomCode.startsWith('P')) {
+        if (!state.pendingSendQueue) state.pendingSendQueue = [];
+        state.pendingSendQueue.push({
+          type: 'pending-plaintext',
+          text,
+          messageId
+        });
+        
+        appendMessage({
+          text,
+          isSent: true,
+          timestamp: Date.now(),
+          messageId,
+          isSending: true
+        });
+
+        dom.messageInput.value = '';
+        dom.messageInput.style.height = 'auto';
+        sendTypingStatus(false);
+        setTimeout(() => dom.messageInput.focus(), 50);
+        return;
+      }
+      return;
+    }
+
+    const { iv, ciphertext } = await state.crypto.encrypt(text);
     const payload = {
       type: 'encrypted-message',
       iv,
@@ -890,14 +927,35 @@ function markMessageSent(messageId) {
   }
 }
 
-function flushPendingSendQueue() {
+async function flushPendingSendQueue() {
   if (state.pendingSendQueue && state.pendingSendQueue.length > 0) {
     console.log(`Flushing ${state.pendingSendQueue.length} pending messages...`);
-    state.pendingSendQueue.forEach(payload => {
-      send(payload);
-      markMessageSent(payload.messageId);
-    });
+    const queue = [...state.pendingSendQueue];
     state.pendingSendQueue = [];
+    for (const item of queue) {
+      if (item.type === 'pending-plaintext') {
+        if (state.isEncrypted) {
+          try {
+            const { iv, ciphertext } = await state.crypto.encrypt(item.text);
+            send({
+              type: 'encrypted-message',
+              iv,
+              ciphertext,
+              messageId: item.messageId
+            });
+            markMessageSent(item.messageId);
+          } catch (err) {
+            console.error('Failed to encrypt queued message:', err);
+          }
+        } else {
+          // Put back in queue if encryption still not ready
+          state.pendingSendQueue.push(item);
+        }
+      } else {
+        send(item);
+        markMessageSent(item.messageId);
+      }
+    }
   }
 }
 
@@ -1352,12 +1410,11 @@ function initEventListeners() {
 
   // ── Personal Chat — Connect with secret phrase ──
   dom.personalConnectBtn.addEventListener('click', async () => {
-    const username = dom.usernameInput.value.trim();
+    let username = dom.usernameInput.value.trim();
     const phrase = dom.secretPhraseInput.value.trim();
     if (!username) {
-      showJoinError('Pehle apna naam daalo.');
-      dom.usernameInput.focus();
-      return;
+      username = 'Anonymous_' + Math.floor(Math.random() * 10000);
+      dom.usernameInput.value = username;
     }
     if (!phrase || phrase.length < 3) {
       showJoinError('Secret phrase kam se kam 3 characters ka hona chahiye.');
@@ -1419,19 +1476,25 @@ function initEventListeners() {
 
   // Create Room
   dom.createRoomBtn.addEventListener('click', async () => {
-    const username = dom.usernameInput.value.trim();
+    let username = dom.usernameInput.value.trim();
     if (!username) {
-      showJoinError('Please enter your name.');
-      dom.usernameInput.focus();
-      return;
+      username = 'Anonymous_' + Math.floor(Math.random() * 10000);
+      dom.usernameInput.value = username;
     }
     state.username = username;
+    
+    const customCodeInput = document.getElementById('custom-room-code-input');
+    let customCode = customCodeInput ? customCodeInput.value.trim().toUpperCase() : '';
+    if (customCode && customCode.length !== 8) {
+      showJoinError('Custom code must be exactly 8 characters long.');
+      return;
+    }
 
     try {
       dom.createRoomBtn.disabled = true;
       dom.createRoomBtn.textContent = 'Creating...';
       await connectWebSocket();
-      send({ type: 'create-room', username });
+      send({ type: 'create-room', username, customCode });
     } catch {
       showJoinError('Cannot connect to server. Is it running?');
       dom.createRoomBtn.disabled = false;
@@ -1473,11 +1536,10 @@ function initEventListeners() {
 
   // Join Room
   dom.joinRoomBtn.addEventListener('click', async () => {
-    const username = dom.usernameInput.value.trim();
+    let username = dom.usernameInput.value.trim();
     if (!username) {
-      showJoinError('Please enter your name.');
-      dom.usernameInput.focus();
-      return;
+      username = 'Anonymous_' + Math.floor(Math.random() * 10000);
+      dom.usernameInput.value = username;
     }
 
     // Combine Upper & Lower keys from grid boxes
@@ -1785,9 +1847,9 @@ function handleIncomingCall(msg) {
   if (msg.callType === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
-    state.speakerMode = 'speaker';
-    dom.callSpeakerBtn.classList.add('active');
-    dom.callSpeakerBtn.title = 'Switch to Earpiece';
+    state.speakerMode = 'earpiece';
+    dom.callSpeakerBtn.classList.remove('active');
+    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
@@ -1818,9 +1880,9 @@ async function startCall(type) {
   if (type === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
-    state.speakerMode = 'speaker';
-    dom.callSpeakerBtn.classList.add('active');
-    dom.callSpeakerBtn.title = 'Switch to Earpiece';
+    state.speakerMode = 'earpiece';
+    dom.callSpeakerBtn.classList.remove('active');
+    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');

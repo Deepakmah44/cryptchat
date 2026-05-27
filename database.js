@@ -73,6 +73,11 @@ module.exports = {
     db.messages = db.messages.filter(m => m.roomUuid !== uuid);
     saveDB(db);
   },
+  clearMessagesForRoom(uuid) {
+    const db = loadDB();
+    db.messages = db.messages.filter(m => m.roomUuid !== uuid);
+    saveDB(db);
+  },
 
   // Rate Limiting
   getRateLimit(ip) {
