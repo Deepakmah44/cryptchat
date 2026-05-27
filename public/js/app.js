@@ -2084,7 +2084,7 @@ async function setupWebRTC() {
       width: { ideal: 640, max: 1280 },
       height: { ideal: 480, max: 720 },
       frameRate: { ideal: 24, max: 30 },
-      facingMode: state.cameraFacingMode || 'user'
+      facingMode: { ideal: state.cameraFacingMode || 'user' }
     } : false
   };
 
@@ -2278,6 +2278,9 @@ function _releaseWakeLock() {
 }
 
 function startProximitySensor() {
+  // Proximity sensor lock should only work in audio calls, never in video calls
+  if (state.callType === 'video') return;
+
   // Only enable proximity detection in earpiece mode during active calls
   if (state.callState !== 'connected' && state.callState !== 'connecting') return;
 
@@ -2371,34 +2374,75 @@ async function flipCamera() {
   const originalContent = dom.callFlipCameraBtn.innerHTML;
   dom.callFlipCameraBtn.innerHTML = `<svg class="spin-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>`;
 
-  try {
-    state.cameraFacingMode = state.cameraFacingMode === 'user' ? 'environment' : 'user';
-    const constraints = {
-      video: {
-        facingMode: state.cameraFacingMode,
-        width: { ideal: 1280, min: 640 },
-        height: { ideal: 720, min: 480 }
-      }
-    };
+  const previousFacingMode = state.cameraFacingMode;
+  state.cameraFacingMode = state.cameraFacingMode === 'user' ? 'environment' : 'user';
 
-    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+  // Lenient constraints to guarantee compatibility across all mobile devices
+  const constraints = {
+    video: {
+      facingMode: { ideal: state.cameraFacingMode },
+      width: { ideal: 640, max: 1280 },
+      height: { ideal: 480, max: 720 },
+      frameRate: { ideal: 24, max: 30 }
+    }
+  };
+
+  try {
+    // 1. Stop the old video track first to unlock the camera hardware on mobile devices
+    videoTracks.forEach(track => track.stop());
+
+    // 2. Request the new stream with relaxed constraints
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (captureErr) {
+      console.warn('Primary camera flip failed, trying fallback without resolution constraints:', captureErr);
+      // Fallback: request only facingMode without any resolution/framerate constraints
+      newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: state.cameraFacingMode } }
+      });
+    }
+
     const newTrack = newStream.getVideoTracks()[0];
 
+    // 3. Update WebRTC peer connection sender
     const senders = state.peerConnection.getSenders();
     const videoSender = senders.find(s => s.track && s.track.kind === 'video');
     if (videoSender) {
       await videoSender.replaceTrack(newTrack);
     }
 
-    videoTracks.forEach(track => track.stop());
-
+    // 4. Update local stream reference and UI
     state.localStream.removeTrack(videoTracks[0]);
     state.localStream.addTrack(newTrack);
     dom.localVideo.srcObject = state.localStream;
     addCallSystemNotice('📷 Camera flipped successfully', false);
   } catch (err) {
-    console.error('Camera flip failed:', err);
-    state.cameraFacingMode = state.cameraFacingMode === 'user' ? 'environment' : 'user';
+    console.error('Camera flip failed completely:', err);
+    state.cameraFacingMode = previousFacingMode;
+    
+    // Restore the old camera stream if possible
+    try {
+      const restoreStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: state.cameraFacingMode },
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 }
+        }
+      });
+      const restoreTrack = restoreStream.getVideoTracks()[0];
+      const senders = state.peerConnection.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (videoSender) {
+        await videoSender.replaceTrack(restoreTrack);
+      }
+      state.localStream.removeTrack(videoTracks[0]);
+      state.localStream.addTrack(restoreTrack);
+      dom.localVideo.srcObject = state.localStream;
+    } catch (restoreErr) {
+      console.error('Failed to restore original camera stream:', restoreErr);
+    }
+    
     addCallSystemNotice('⚠️ Camera flip failed', true);
   } finally {
     dom.callFlipCameraBtn.innerHTML = originalContent;
@@ -2454,9 +2498,12 @@ function applyAudioRouting() {
 
   } else {
     // ═══ EARPIECE MODE ═══
-    // Critical: Route audio through a SEPARATE <audio> element
-    // Mobile OS routes <audio> to earpiece (voice call channel)
-    // while <video> routes to media/loudspeaker channel
+    // Critical: Route audio through a SEPARATE <audio> element.
+    // To force iOS and Android mobile OS to route WebRTC audio to the earpiece speaker,
+    // we MUST completely unbind any video streams from the <video> element. 
+    // If a <video> element is rendering a stream on screen, the OS locks the audio session
+    // to "media playback" (loudspeaker) channel. Leaving only an <audio> element active
+    // shifts the OS classification to "voice call communication" (earpiece).
     const audioOnlyStream = new MediaStream(audioTracks);
     dom.remoteAudio.srcObject = audioOnlyStream;
     dom.remoteAudio.muted = false;
@@ -2471,18 +2518,8 @@ function applyAudioRouting() {
       });
     }
 
-    // For video calls, keep video rendering but MUTE its audio
-    if (state.callType === 'video') {
-      const videoTracks = state.remoteStream.getVideoTracks();
-      if (videoTracks.length > 0) {
-        const videoOnlyStream = new MediaStream(videoTracks);
-        dom.remoteVideo.srcObject = videoOnlyStream;
-        dom.remoteVideo.muted = true; // MUST mute to force OS earpiece routing
-        dom.remoteVideo.volume = 0;
-      }
-    } else {
-      dom.remoteVideo.srcObject = null;
-    }
+    // Completely clear remote video rendering in earpiece mode to force earpiece routing
+    dom.remoteVideo.srcObject = null;
 
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
