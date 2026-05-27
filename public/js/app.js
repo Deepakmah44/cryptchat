@@ -1551,6 +1551,41 @@ function initEventListeners() {
   document.addEventListener('visibilitychange', handleWindowFocus);
 }
 
+async function handleWindowFocus() {
+  if (document.hidden) return;
+
+  // 1. Send all queued read receipts
+  if (state.unreadReceivedMsgs && state.unreadReceivedMsgs.length > 0) {
+    state.unreadReceivedMsgs.forEach(msgId => {
+      send({ type: 'message-read', messageId: msgId });
+    });
+    state.unreadReceivedMsgs = [];
+  }
+
+  // 2. If disconnected but we have a roomCode, trigger instant reconnect
+  if (state.roomCode && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
+    console.log('App focused/online. Triggering instant reconnect...');
+    if (state.reconnectTimeoutId) {
+      clearTimeout(state.reconnectTimeoutId);
+      state.reconnectTimeoutId = null;
+    }
+    
+    try {
+      await connectWebSocket();
+      send({
+        type: 'join-room',
+        roomCode: state.roomCode,
+        username: state.username,
+        userId: state.userId
+      });
+    } catch (err) {
+      console.warn('Instant reconnect on focus/online failed, fallback to backoff:', err);
+      attemptReconnect();
+    }
+  }
+}
+
+
 // ═══════════════════════════════════════════
 // WEBRTC CALLING ENGINE
 // ═══════════════════════════════════════════
