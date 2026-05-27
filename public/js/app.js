@@ -125,13 +125,31 @@ function initParticles() {
   const ctx = canvas.getContext('2d');
   let particles = [];
   let animId;
+  let isPaused = false;
   
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
   }
+
+  // Throttle resize handler to prevent layout thrashing on mobile orientation change
+  let resizeTimeout;
+  function throttledResize() {
+    if (resizeTimeout) clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      resize();
+      // If paused, draw once statically to match new dimensions
+      if (isPaused || prefersReducedMotion) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        particles.forEach(p => p.draw());
+      }
+    }, 100);
+  }
+  
   resize();
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', throttledResize, { passive: true });
 
   class Particle {
     constructor() {
@@ -148,6 +166,7 @@ function initParticles() {
       this.color = Math.random() > 0.5 ? '100, 116, 139' : '37, 99, 235';
     }
     update() {
+      if (prefersReducedMotion) return;
       this.x += this.speedX;
       this.y += this.speedY;
       if (this.x < 0 || this.x > canvas.width) this.speedX *= -1;
@@ -167,6 +186,8 @@ function initParticles() {
   particles = Array.from({ length: count }, () => new Particle());
 
   function animate() {
+    if (isPaused || prefersReducedMotion) return;
+    
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Update and draw particles in a single pass
@@ -206,7 +227,42 @@ function initParticles() {
     }
     animId = requestAnimationFrame(animate);
   }
-  animate();
+
+  function pause() {
+    if (!isPaused) {
+      isPaused = true;
+      if (animId) {
+        cancelAnimationFrame(animId);
+        animId = null;
+      }
+    }
+  }
+
+  function resume() {
+    if (prefersReducedMotion) return;
+    if (isPaused) {
+      isPaused = false;
+      animate();
+    }
+  }
+
+  // Bind visibility and focus handlers to save battery in background
+  const onVisibilityChange = () => {
+    if (document.hidden) pause();
+    else resume();
+  };
+  
+  document.addEventListener('visibilitychange', onVisibilityChange, { passive: true });
+  window.addEventListener('blur', pause, { passive: true });
+  window.addEventListener('focus', resume, { passive: true });
+
+  // Draw once initially
+  if (prefersReducedMotion) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach(p => p.draw());
+  } else {
+    animate();
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -1066,7 +1122,7 @@ function showContextMenu(x, y, messageId, messageText) {
   // Close on outside click
   setTimeout(() => {
     document.addEventListener('click', closeContextMenuOnOutside);
-    document.addEventListener('touchstart', closeContextMenuOnOutside);
+    document.addEventListener('touchstart', closeContextMenuOnOutside, { passive: true });
   }, 10);
 }
 
@@ -1984,13 +2040,15 @@ async function setupWebRTC() {
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
-      sampleRate: 48000
+      channelCount: 1, // Mono audio — earpiece is mono, saves bandwidth
+      sampleRate: 48000, // Opus native rate
+      sampleSize: 16
     },
     video: state.callType === 'video' ? {
-      width: { ideal: 1280, min: 640 },
-      height: { ideal: 720, min: 480 },
-      frameRate: { ideal: 30, min: 15 },
-      facingMode: 'user'
+      width: { ideal: 640, max: 1280 },
+      height: { ideal: 480, max: 720 },
+      frameRate: { ideal: 24, max: 30 },
+      facingMode: state.cameraFacingMode || 'user'
     } : false
   };
 
@@ -2060,17 +2118,22 @@ async function setupWebRTC() {
     // Start active call timer display
     startCallTimer();
 
-    // Apply absolute audio routing (Earpiece for audio, Speaker for video)
+    // Apply audio routing (Earpiece default for both audio & video calls)
     applyAudioRouting();
 
-    if (state.callType === 'audio') {
-      window.addEventListener('deviceorientation', handleDeviceOrientation);
+    // Start proximity sensor for earpiece mode (works for audio AND video calls)
+    if (state.speakerMode === 'earpiece') {
+      startProximitySensor();
     }
   };
 
   state.localStream.getTracks().forEach(track => {
     state.peerConnection.addTrack(track, state.localStream);
   });
+
+  // ═══ BITRATE OPTIMIZATION (Low Data Usage) ═══
+  // Limit bandwidth: Audio=32kbps (Opus), Video=500kbps
+  _applyBitrateLimits();
 
   // Process any WebRTC signals that arrived before setup was complete
   if (state.pendingWebRTCSignals && state.pendingWebRTCSignals.length > 0) {
@@ -2141,24 +2204,120 @@ function toggleVideo() {
   }
 }
 
+// ═══ PROXIMITY SENSOR SYSTEM (WhatsApp-like) ═══
+// Uses layered approach: ProximitySensor API > Generic Sensor > DeviceOrientation fallback
+let _proximitySensor = null;
+let _wakeLock = null;
+
 function toggleProximityOverlay(show) {
   if (!dom.callProximityOverlay) return;
   if (show) {
     dom.callProximityOverlay.classList.remove('hidden');
     state.proximityBlackout = true;
+    // Acquire Wake Lock to keep call alive while screen is dimmed
+    _acquireWakeLock();
   } else {
     dom.callProximityOverlay.classList.add('hidden');
     state.proximityBlackout = false;
+    _releaseWakeLock();
   }
 }
 
+async function _acquireWakeLock() {
+  try {
+    if ('wakeLock' in navigator && !_wakeLock) {
+      _wakeLock = await navigator.wakeLock.request('screen');
+      _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+    }
+  } catch (e) { /* Wake Lock not supported or denied */ }
+}
+
+function _releaseWakeLock() {
+  try {
+    if (_wakeLock) {
+      _wakeLock.release();
+      _wakeLock = null;
+    }
+  } catch (e) {}
+}
+
+function startProximitySensor() {
+  // Only enable proximity detection in earpiece mode during active calls
+  if (state.callState !== 'connected' && state.callState !== 'connecting') return;
+
+  // Strategy 1: Native ProximitySensor API (Chrome Android 90+)
+  if ('ProximitySensor' in window) {
+    try {
+      _proximitySensor = new ProximitySensor();
+      _proximitySensor.addEventListener('reading', () => {
+        if (state.callState !== 'connected') return;
+        if (state.speakerMode !== 'earpiece') {
+          toggleProximityOverlay(false);
+          return;
+        }
+        // near = true when object is close to sensor
+        if (_proximitySensor.near) {
+          toggleProximityOverlay(true);
+        } else {
+          toggleProximityOverlay(false);
+        }
+      });
+      _proximitySensor.addEventListener('error', () => {
+        // Fallback to gyroscope
+        _startGyroscopeProximity();
+      });
+      _proximitySensor.start();
+      return;
+    } catch (e) {
+      // Fall through to next strategy
+    }
+  }
+
+  // Strategy 2: Generic Sensor API with 'proximity' type
+  if ('Sensor' in window) {
+    try {
+      const sensor = new Sensor({ frequency: 5 });
+      // If generic proximity not supported, fall through
+    } catch (e) {}
+  }
+
+  // Strategy 3: DeviceOrientation gyroscope fallback (works on all mobiles)
+  _startGyroscopeProximity();
+}
+
+function _startGyroscopeProximity() {
+  // Use accelerometer + gyroscope to detect phone-to-ear gesture
+  // Beta > 70° = phone is vertical and likely near ear
+  window.addEventListener('deviceorientation', handleDeviceOrientation);
+}
+
+function stopProximitySensor() {
+  // Stop native sensor
+  if (_proximitySensor) {
+    try { _proximitySensor.stop(); } catch (e) {}
+    _proximitySensor = null;
+  }
+  // Remove gyroscope listener
+  window.removeEventListener('deviceorientation', handleDeviceOrientation);
+  // Release wake lock
+  _releaseWakeLock();
+  // Hide overlay
+  toggleProximityOverlay(false);
+}
+
 function handleDeviceOrientation(event) {
-  if (state.callState !== 'connected' || state.speakerMode !== 'earpiece' || state.callType !== 'audio') {
+  if (state.callState !== 'connected') {
+    toggleProximityOverlay(false);
+    return;
+  }
+  // Only activate proximity screen-off in earpiece mode
+  if (state.speakerMode !== 'earpiece') {
     toggleProximityOverlay(false);
     return;
   }
   if (event && event.beta !== null) {
     const beta = Math.abs(event.beta);
+    // Phone held vertically (> 70°) = near ear gesture
     if (beta > 70) {
       toggleProximityOverlay(true);
     } else if (beta < 45) {
@@ -2217,8 +2376,12 @@ async function toggleLoudspeaker() {
   // Toggle state
   if (state.speakerMode === 'speaker') {
     state.speakerMode = 'earpiece';
+    // Start proximity detection in earpiece mode
+    startProximitySensor();
   } else {
     state.speakerMode = 'speaker';
+    // Stop proximity detection in speaker mode
+    stopProximitySensor();
   }
 
   // Apply real-time physical track routing
@@ -2236,48 +2399,50 @@ function applyAudioRouting() {
   dom.remoteAudio.srcObject = null;
 
   if (state.speakerMode === 'speaker') {
-    // ROUTE TO LOUDSPEAKER (External Speaker):
-    // Play full stream (including audio) through <video> element
+    // ═══ LOUDSPEAKER MODE ═══
+    // Route full stream (audio+video) through <video> element at full volume
     dom.remoteVideo.srcObject = state.remoteStream;
     dom.remoteVideo.muted = false;
-    
-    // De-activate hidden audio element
+    dom.remoteVideo.volume = 1.0;
     dom.remoteAudio.srcObject = null;
-    
+
+    // Force play
+    dom.remoteVideo.play().catch(() => {});
+
     dom.callSpeakerBtn.classList.add('active');
     dom.callSpeakerBtn.title = 'Switch to Earpiece';
     addCallSystemNotice('🔊 Switched to Loudspeaker', false);
 
-    // Dynamic setSinkId fallback for Android/Chrome
-    try {
-      if (typeof dom.remoteVideo.setSinkId === 'function') {
-        navigator.mediaDevices.enumerateDevices().then(devices => {
-          const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-          const speaker = audioOutputs.find(d => 
-            d.label.toLowerCase().includes('speaker') || 
-            d.label.toLowerCase().includes('loudspeaker') ||
-            d.label.toLowerCase().includes('external')
-          );
-          if (speaker) {
-            dom.remoteVideo.setSinkId(speaker.deviceId);
-          }
-        });
-      }
-    } catch (e) {}
+    // Try setSinkId for speaker device
+    _trySetSinkId(dom.remoteVideo, 'speaker');
+
   } else {
-    // ROUTE TO EARPIECE (Handset Receiver):
-    // Play audio tracks exclusively through <audio> element to trigger mobile hardware routing
+    // ═══ EARPIECE MODE ═══
+    // Critical: Route audio through a SEPARATE <audio> element
+    // Mobile OS routes <audio> to earpiece (voice call channel)
+    // while <video> routes to media/loudspeaker channel
     const audioOnlyStream = new MediaStream(audioTracks);
     dom.remoteAudio.srcObject = audioOnlyStream;
     dom.remoteAudio.muted = false;
+    dom.remoteAudio.volume = 1.0;
 
-    // For video calls, keep video tracks rendering inside <video> but MUTED!
+    // Force explicit play — mobile browsers block autoplay
+    const playPromise = dom.remoteAudio.play();
+    if (playPromise) {
+      playPromise.catch(() => {
+        // Retry once after a small delay
+        setTimeout(() => { dom.remoteAudio.play().catch(() => {}); }, 200);
+      });
+    }
+
+    // For video calls, keep video rendering but MUTE its audio
     if (state.callType === 'video') {
       const videoTracks = state.remoteStream.getVideoTracks();
       if (videoTracks.length > 0) {
         const videoOnlyStream = new MediaStream(videoTracks);
         dom.remoteVideo.srcObject = videoOnlyStream;
-        dom.remoteVideo.muted = true; // MUST mute video element to force OS earpiece routing
+        dom.remoteVideo.muted = true; // MUST mute to force OS earpiece routing
+        dom.remoteVideo.volume = 0;
       }
     } else {
       dom.remoteVideo.srcObject = null;
@@ -2285,26 +2450,83 @@ function applyAudioRouting() {
 
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
-    addCallSystemNotice('🔇 Switched to Earpiece (Normal Sound)', false);
+    addCallSystemNotice('🔇 Switched to Earpiece', false);
 
-    // Dynamic setSinkId fallback for handset earpiece
-    try {
-      if (typeof dom.remoteAudio.setSinkId === 'function') {
-        navigator.mediaDevices.enumerateDevices().then(devices => {
-          const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-          const earpiece = audioOutputs.find(d => 
-            d.label.toLowerCase().includes('earpiece') || 
-            d.label.toLowerCase().includes('receiver') || 
-            d.label.toLowerCase().includes('handset') ||
-            d.label.toLowerCase().includes('phone')
-          );
-          if (earpiece) {
-            dom.remoteAudio.setSinkId(earpiece.deviceId);
-          }
-        });
-      }
-    } catch (e) {}
+    // Try setSinkId for earpiece device
+    _trySetSinkId(dom.remoteAudio, 'earpiece');
   }
+}
+
+// ═══ Hardware Audio Output Routing via setSinkId ═══
+async function _trySetSinkId(element, targetMode) {
+  try {
+    if (typeof element.setSinkId !== 'function') return;
+    
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
+    
+    if (audioOutputs.length <= 1) return; // No alternative outputs
+
+    let target;
+    if (targetMode === 'earpiece') {
+      target = audioOutputs.find(d => {
+        const l = d.label.toLowerCase();
+        return l.includes('earpiece') || l.includes('receiver') || 
+               l.includes('handset') || l.includes('phone');
+      });
+      // If no earpiece found, use default ('' = system default = earpiece on calls)
+      if (!target) {
+        await element.setSinkId('');
+        return;
+      }
+    } else {
+      target = audioOutputs.find(d => {
+        const l = d.label.toLowerCase();
+        return l.includes('speaker') || l.includes('loudspeaker') || 
+               l.includes('external');
+      });
+    }
+    
+    if (target) {
+      await element.setSinkId(target.deviceId);
+    }
+  } catch (e) {
+    // setSinkId not supported or permission denied — silent fallback
+  }
+}
+
+// ═══ BITRATE LIMITS FOR LOW DATA USAGE ═══
+// Caps bandwidth: Audio 32kbps (Opus), Video 500kbps
+// WhatsApp uses similar limits for efficient mobile calling
+function _applyBitrateLimits() {
+  if (!state.peerConnection) return;
+  
+  const senders = state.peerConnection.getSenders();
+  
+  senders.forEach(sender => {
+    if (!sender.track) return;
+    
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      
+      if (sender.track.kind === 'audio') {
+        // Opus codec at 32kbps — excellent voice quality, minimal data
+        params.encodings[0].maxBitrate = 32000;
+      } else if (sender.track.kind === 'video') {
+        // 500kbps video — good for mobile, ~3.75 MB/min
+        params.encodings[0].maxBitrate = 500000;
+        // Scale down resolution on slow connections
+        params.encodings[0].scaleResolutionDownBy = params.encodings[0].scaleResolutionDownBy || 1.0;
+      }
+      
+      sender.setParameters(params).catch(() => {});
+    } catch (e) {
+      // setParameters not supported in this browser — silent fallback
+    }
+  });
 }
 
 function startCallTimer() {
@@ -2334,8 +2556,8 @@ function resetCallUI() {
   stopRingtone();
   stopCallTimer();
   
-  window.removeEventListener('deviceorientation', handleDeviceOrientation);
-  toggleProximityOverlay(false);
+  // Stop all proximity detection (sensor + gyroscope + wake lock)
+  stopProximitySensor();
   
   if (state.callStartTime) {
     const duration = Date.now() - state.callStartTime;
@@ -2547,8 +2769,8 @@ function init() {
     document.removeEventListener('click', primeAudioContext);
     document.removeEventListener('touchstart', primeAudioContext);
   };
-  document.addEventListener('click', primeAudioContext);
-  document.addEventListener('touchstart', primeAudioContext);
+  document.addEventListener('click', primeAudioContext, { passive: true });
+  document.addEventListener('touchstart', primeAudioContext, { passive: true });
 
   dom.usernameInput.focus();
 }

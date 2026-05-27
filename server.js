@@ -237,18 +237,29 @@ wss.on('connection', (ws, req) => {
         // Authentication success: reset the IP rate limit counter
         db.clearRateLimit(clientIp);
 
+        // Initialize active users array if needed
+        if (!activeSockets.has(roomCode)) {
+          activeSockets.set(roomCode, []);
+        }
+        const activeUsers = activeSockets.get(roomCode);
+
+        // Clear disconnected users immediately to allow reconnects
+        const discoIdx = activeUsers.findIndex(u => !u.ws || u.ws.readyState !== 1);
+        if (discoIdx !== -1) {
+          const discoUser = activeUsers[discoIdx];
+          if (discoUser.disconnectTimeout) {
+            clearTimeout(discoUser.disconnectTimeout);
+          }
+          activeUsers.splice(discoIdx, 1);
+          db.updateRoomConnections(roomCode, -1);
+          room = db.getRoom(roomCode);
+        }
 
         // Check active connection capacity
         if (room.activeConnections >= 2) {
           ws.send(JSON.stringify({ type: 'error', message: 'Private room occupied' }));
           return;
         }
-
-        // Initialize active users array if needed
-        if (!activeSockets.has(roomCode)) {
-          activeSockets.set(roomCode, []);
-        }
-        const activeUsers = activeSockets.get(roomCode);
 
         // Handle reconnect / resumes
         let existingUser = null;

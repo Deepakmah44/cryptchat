@@ -82,6 +82,20 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 
+/* Snappy taps - disable 300ms delay on mobile browsers */
+button, 
+.icon-btn, 
+.tab-btn, 
+.btn, 
+.key-box,
+.emoji-picker-grid span,
+.clean-logs-button,
+.attach-button,
+.emoji-button,
+.send-button {
+  touch-action: manipulation;
+}
+
 body {
   font-family: var(--font-sans);
   background: var(--bg-primary);
@@ -96,6 +110,8 @@ body {
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
 }
 
 /* ── Screens ── */
@@ -734,7 +750,6 @@ input[type="password"] {
   border-bottom: 1px solid rgba(0, 0, 0, 0.15);
   background: var(--bg-secondary);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  will-change: transform;
 }
 
 .header-left {
@@ -912,6 +927,8 @@ input[type="password"] {
   max-width: 80%;
   animation: messageSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
   will-change: transform, opacity;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
 }
 
 .message-wrapper.sent {
@@ -1038,7 +1055,6 @@ input[type="password"] {
   z-index: 100;
   display: flex;
   flex-direction: column;
-  will-change: transform;
 }
 
 .input-wrapper {
@@ -1060,7 +1076,7 @@ input[type="password"] {
   max-height: 120px;
   padding: 11px 18px;
   line-height: 20px;
-  font-size: 0.95rem;
+  font-size: 16px; /* Prevents iOS auto-zoom */
   font-family: inherit;
   border-radius: 22px; /* High-rounded capsule */
   background: rgba(15, 23, 42, 0.6);
@@ -1221,20 +1237,52 @@ input[type="password"] {
    RESPONSIVE
    ═══════════════════════════════════════════ */
 
-/* Small phones */
+/* Small phones & narrow viewports (e.g. Galaxy Fold, iPhone SE) */
 @media (max-width: 380px) {
   .logo-text {
-    font-size: 2rem;
+    font-size: 1.8rem;
+  }
+  .logo-tagline {
+    font-size: 0.72rem;
   }
   .security-badges {
     gap: 4px;
   }
   .badge {
-    font-size: 0.65rem;
-    padding: 4px 8px;
+    font-size: 0.62rem;
+    padding: 3px 6px;
   }
   .glass-card {
-    padding: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+  }
+  .key-box {
+    height: 38px;
+    max-width: 38px;
+    font-size: 0.95rem;
+    border-radius: 6px;
+  }
+  .key-grid {
+    gap: 4px;
+  }
+  .keys-display-row {
+    gap: var(--space-sm);
+  }
+  .key-display-box {
+    padding: 6px;
+  }
+  .key-value {
+    font-size: 0.8rem;
+  }
+  .personal-chat-header {
+    gap: 4px;
+  }
+  .personal-desc {
+    font-size: 0.72rem;
+    max-width: 240px;
+  }
+  #custom-room-code-input {
+    padding: 10px 14px;
+    font-size: 0.88rem;
   }
 }
 
