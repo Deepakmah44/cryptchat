@@ -11,6 +11,35 @@ const server = http.createServer(app);
 // ── WebSocket Server with 16MB max payload for encrypted file sharing ──
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 * 1024 });
 
+// ── Security Headers Middleware ──
+app.use((req, res, next) => {
+  // HSTS: Force HTTPS for 1 year (including subdomains)
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // Prevent clickjacking via iframe embedding
+  res.setHeader('X-Frame-Options', 'DENY');
+  // Prevent MIME-type sniffing attacks
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  // Referrer leak prevention
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // Disable dangerous browser features
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(), payment=()');
+  // Content Security Policy: Restrict all resource origins
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' https://webrtc.github.io",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "connect-src 'self' wss: ws:",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "frame-ancestors 'none'"
+  ].join('; '));
+  // Prevent caching of sensitive pages
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  next();
+});
+
 // Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -76,11 +105,42 @@ wss.on('connection', (ws, req) => {
   // Extract client IP address securely
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
 
+  // WebSocket Origin Validation (prevent cross-site WebSocket hijacking)
+  const origin = req.headers.origin || '';
+  const allowedOrigins = [
+    'https://cryptchat-p.onrender.com',
+    'http://localhost:3000',
+    'http://localhost',
+    'https://localhost'
+  ];
+  if (origin && !allowedOrigins.some(o => origin.startsWith(o))) {
+    ws.close(1008, 'Origin not allowed');
+    return;
+  }
+
   ws.on('message', (data) => {
     let msg;
     try {
       msg = JSON.parse(data);
     } catch {
+      return;
+    }
+
+    // Message type whitelist: reject any unknown/malformed message types
+    const ALLOWED_TYPES = [
+      'create-room', 'join-room', 'key-exchange', 'encrypted-message',
+      'typing', 'message-delivered', 'message-opened', 'message-read',
+      'edit-message', 'unsend-message', 'ping', 'leave-room',
+      'destroy-old-messages', 'call-invite', 'call-accept',
+      'call-decline', 'call-hangup', 'webrtc-signal'
+    ];
+    if (!msg.type || !ALLOWED_TYPES.includes(msg.type)) {
+      return;
+    }
+
+    // Username length cap (prevent memory abuse via oversized names)
+    if (msg.username && (typeof msg.username !== 'string' || msg.username.length > 30)) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Username too long (max 30 chars).' }));
       return;
     }
 

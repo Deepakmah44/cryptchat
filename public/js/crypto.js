@@ -13,24 +13,30 @@ class CryptoEngine {
 
   /**
    * Derive shared AES-256-GCM key directly from the secret phrase (for offline asynchronous E2EE)
+   * Uses PBKDF2 with 600,000 iterations (OWASP 2024 recommendation) and context-bound salting
    */
   async deriveKeyFromSecret(secretPhrase, saltString) {
     const encoder = new TextEncoder();
+    
+    // Normalize input to prevent encoding attacks
+    const normalizedPhrase = secretPhrase.trim();
+    
     const baseKey = await crypto.subtle.importKey(
       'raw',
-      encoder.encode(secretPhrase.trim().toLowerCase()),
+      encoder.encode(normalizedPhrase),
       'PBKDF2',
       false,
       ['deriveKey']
     );
     
-    const salt = encoder.encode('CryptChat::Salt::' + saltString.trim().toLowerCase());
+    // Context-bound salt prevents cross-protocol key confusion
+    const salt = encoder.encode('CryptChat::E2EE::v2::' + saltString.trim());
 
     this.sharedKey = await crypto.subtle.deriveKey(
       {
         name: 'PBKDF2',
         salt: salt,
-        iterations: 100000,
+        iterations: 600000,
         hash: 'SHA-256'
       },
       baseKey,
@@ -91,7 +97,16 @@ class CryptoEngine {
   }
 
   /**
+   * Set current room context for Additional Authenticated Data (AAD)
+   * Prevents cross-room ciphertext replay attacks
+   */
+  setRoomContext(roomId) {
+    this._roomContext = roomId || '';
+  }
+
+  /**
    * Encrypt a message string → { iv, ciphertext } (base64)
+   * Uses AES-256-GCM with 96-bit random IV and room-bound AAD
    */
   async encrypt(plaintext) {
     if (!this.sharedKey) throw new Error('Shared key not derived');
@@ -102,8 +117,11 @@ class CryptoEngine {
     // Generate random 12-byte IV (NEVER reuse)
     const iv = crypto.getRandomValues(new Uint8Array(12));
     
+    // Additional Authenticated Data binds ciphertext to current room
+    const aad = encoder.encode('CryptChat::AAD::' + (this._roomContext || ''));
+    
     const ciphertext = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
+      { name: 'AES-GCM', iv, additionalData: aad },
       this.sharedKey,
       data
     );
@@ -116,15 +134,18 @@ class CryptoEngine {
 
   /**
    * Decrypt { iv, ciphertext } (base64) → plaintext string
+   * Validates AAD to ensure ciphertext belongs to this room
    */
   async decrypt(ivBase64, ciphertextBase64) {
     if (!this.sharedKey) throw new Error('Shared key not derived');
 
+    const encoder = new TextEncoder();
     const iv = this._base64ToArrayBuffer(ivBase64);
     const ciphertext = this._base64ToArrayBuffer(ciphertextBase64);
+    const aad = encoder.encode('CryptChat::AAD::' + (this._roomContext || ''));
 
     const decrypted = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
+      { name: 'AES-GCM', iv, additionalData: aad },
       this.sharedKey,
       ciphertext
     );

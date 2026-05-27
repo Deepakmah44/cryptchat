@@ -334,6 +334,7 @@ async function handleServerMessage(msg) {
 
       // Derive E2EE key locally via PBKDF2 symmetrically
       await state.crypto.deriveKeyFromSecret(msg.upperKey + msg.lowerKey, msg.roomCode);
+      state.crypto.setRoomContext(msg.roomCode);
       state.isEncrypted = true;
       updateEncryptionStatus(true);
       enableInput();
@@ -371,6 +372,7 @@ async function handleServerMessage(msg) {
       
       // Symmetrically derive E2EE key from the inputted combined key
       await state.crypto.deriveKeyFromSecret(state.combinedKey, msg.roomCode);
+      state.crypto.setRoomContext(msg.roomCode);
       state.isEncrypted = true;
       updateEncryptionStatus(true);
       enableInput();
