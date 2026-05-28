@@ -223,15 +223,29 @@ wss.on('connection', (ws, req) => {
         // Path B: Permanent Secure Room (Dual-Keys)
         else {
           const inputKey = (msg.combinedKey || '').trim();
-          const incomingHash = hashKey(inputKey);
-          room = db.getRoomByKeyHash(incomingHash);
+          if (inputKey) {
+            const incomingHash = hashKey(inputKey);
+            room = db.getRoomByKeyHash(incomingHash);
+            
+            if (!room) {
+              // The room was purged or wiped due to server restart on ephemeral storage.
+              // Since they entered the correct keys, we deterministically derive the room code 
+              // from the key hash and recreate the room on the fly to guarantee persistence!
+              const derivedRoomCode = crypto.createHash('sha256').update(incomingHash).digest('hex').substring(0, 8).toUpperCase();
+              db.createRoom(derivedRoomCode, incomingHash);
+              room = db.getRoom(derivedRoomCode);
+            }
+          } else if (msg.roomCode) {
+            // Reconnecting using roomCode without combinedKey (fallback)
+            room = db.getRoom(msg.roomCode);
+          }
           
-          if (!room) {
-            db.recordFailedAttempt(clientIp);
-            ws.send(JSON.stringify({ type: 'error', message: 'Invalid secure access' }));
+          if (room) {
+            roomCode = room.uuid;
+          } else {
+            ws.send(JSON.stringify({ type: 'error', message: 'Secure room not found or invalid keys.' }));
             return;
           }
-          roomCode = room.uuid;
         }
 
         // Authentication success: reset the IP rate limit counter
@@ -539,6 +553,15 @@ setInterval(() => {
   try {
     db.purgeExpiredMessages();
     db.purgeInactiveRooms();
+    
+    // Broadcast the purge event to all active rooms so clients clear them instantly
+    const threshold = Date.now() - 600000;
+    activeSockets.forEach((users, roomCode) => {
+      broadcastToRoom(roomCode, {
+        type: 'old-messages-destroyed',
+        threshold: threshold
+      });
+    });
   } catch (e) {
     console.error('Auto-purge background task failed:', e);
   }

@@ -171,8 +171,9 @@
       <div id="secure-context-warning" class="error-toast warning hidden" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.5); color: #f87171; font-weight: 500; font-size: 0.85rem; border-radius: 8px; padding: 12px; margin-top: 15px; text-align: center; line-height: 1.4;"></div>
 
       <!-- Footer -->
-      <footer class="join-footer">
+      <footer class="join-footer" style="text-align: center; margin-top: 20px; font-size: 0.8rem; color: var(--text-muted);">
         <p>Messages are encrypted in your browser. The server never sees your messages.</p>
+        <p style="margin-top: 8px;">Developer Contact: <a href="mailto:deepakdipu586@gmail.com" style="color: var(--accent-cyan); text-decoration: none; font-weight: 500; transition: color 0.2s ease;" onmouseover="this.style.color='#7c3aed'" onmouseout="this.style.color='var(--accent-cyan)'">deepakdipu586@gmail.com</a></p>
       </footer>
     </div>
   </section>
@@ -249,34 +250,14 @@
       <span id="typing-name">Someone</span> is typing...
     </div>
 
-    <!-- Message Input -->
     <footer class="chat-input-bar glass-surface" style="position: relative;">
-      <!-- Emoji Picker Panel (initially hidden) -->
-      <div id="emoji-picker-panel" class="emoji-picker-panel hidden glass-card">
-        <div class="emoji-picker-grid">
-          <span>❤️</span><span>💖</span><span>💕</span><span>😘</span><span>😍</span>
-          <span>🤫</span><span>😊</span><span>🙈</span><span>👻</span><span>👑</span>
-          <span>🌹</span><span>🍫</span><span>🧸</span><span>🍷</span><span>🍿</span>
-          <span>📷</span><span>💬</span><span>💋</span><span>🌸</span><span>✨</span>
-          <span>🎈</span><span>🎉</span><span>🚀</span><span>🔥</span><span>💯</span>
-          <span>👍</span><span>✌️</span><span>😂</span><span>😎</span><span>🥺</span>
-          <span>😢</span><span>😡</span><span>😈</span><span>💍</span><span>🕊️</span>
-          <span>🌙</span><span>⭐</span><span>🌈</span><span>🔒</span><span>📞</span>
-        </div>
-      </div>
-
       <div class="input-wrapper">
         <button id="attach-btn" class="attach-button" disabled title="Attach Photo/Video/File">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
         </button>
-        <button id="emoji-btn" class="emoji-button" disabled title="Add Emoji">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-        </button>
         <input type="file" id="file-input" class="hidden" accept="image/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
         <textarea id="message-input" placeholder="Type a message..." rows="1" maxlength="5000" disabled inputmode="text" enterkeyhint="send"></textarea>
-        <button id="clean-logs-btn" class="clean-logs-button" disabled title="Destroy messages older than 10 minutes for both users and server">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        </button>
+
         <button id="send-btn" class="send-button" disabled title="Send Message">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>

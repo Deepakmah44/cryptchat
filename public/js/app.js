@@ -77,7 +77,7 @@ const dom = {
   typingName: $('#typing-name'),
   // Input
   messageInput: $('#message-input'),
-  cleanLogsBtn: $('#clean-logs-btn'),
+  cleanLogsBtn: null,
   attachBtn: $('#attach-btn'),
   fileInput: $('#file-input'),
   sendBtn: $('#send-btn'),
@@ -103,9 +103,9 @@ const dom = {
   callSpeakerBtn: $('#call-speaker-btn'),
   callHangupBtn: $('#call-hangup-btn'),
   callProximityOverlay: $('#call-proximity-overlay'),
-  // Emoji Picker DOM Refs
-  emojiBtn: $('#emoji-btn'),
-  emojiPickerPanel: $('#emoji-picker-panel'),
+  // Emoji Picker DOM Refs (Removed in favor of native system keyboard emoji selector)
+  emojiBtn: null,
+  emojiPickerPanel: null,
   // Lightbox DOM Refs
   lightboxModal: $('#lightbox-modal'),
   lightboxImg: $('#lightbox-img'),
@@ -368,7 +368,8 @@ function attemptReconnect() {
         type: 'join-room',
         roomCode: state.roomCode,
         username: state.username,
-        userId: state.userId
+        userId: state.userId,
+        combinedKey: state.combinedKey
       });
     } catch {
       attemptReconnect();
@@ -434,8 +435,28 @@ async function handleServerMessage(msg) {
       if (msg.resumed) {
         dom.chatPeerName.textContent = msg.peerUsername || 'Waiting for peer...';
         updateConnectionStatus(msg.peerUsername ? 'online' : 'waiting', msg.peerUsername ? 'Online' : 'Room ready');
-        updateEncryptionStatus(state.isEncrypted);
-        enableInput();
+        
+        if (msg.roomCode.startsWith('P')) {
+          if (!state.isEncrypted) {
+            addSystemNotice('Re-establishing secure E2E encryption...');
+            await initiateKeyExchange();
+          } else {
+            updateEncryptionStatus(state.isEncrypted);
+            enableInput();
+          }
+        } else {
+          // Symmetrically derive E2EE key from the stored combined key
+          if (state.combinedKey && !state.isEncrypted) {
+            await state.crypto.deriveKeyFromSecret(state.combinedKey, msg.roomCode);
+            state.crypto.setRoomContext(msg.roomCode);
+            state.isEncrypted = true;
+            updateEncryptionStatus(true);
+            addSystemNotice('🔒 E2E Encrypted');
+          } else {
+            updateEncryptionStatus(state.isEncrypted);
+          }
+          enableInput();
+        }
         break;
       }
 
@@ -456,7 +477,7 @@ async function handleServerMessage(msg) {
           try {
             await state.crypto.generateKeyPair();
             const publicKey = await state.crypto.exportPublicKey();
-            send({ type: 'key-exchange', publicKey });
+            send({ type: 'key-exchange', publicKey, isInitiator: true });
           } catch (err) {
             console.error('ECDH key generation failed:', err);
           }
@@ -487,7 +508,7 @@ async function handleServerMessage(msg) {
       break;
 
     case 'key-exchange':
-      await handleKeyExchange(msg.publicKey);
+      await handleKeyExchange(msg.publicKey, msg.isInitiator);
       break;
 
     case 'message-history':
@@ -516,7 +537,6 @@ async function handleServerMessage(msg) {
           }
         }
       });
-      addSystemNotice('⏰ 10 minute pehele ke saare logs permanently destroy kar diye gaye hain.');
       break;
     }
 
@@ -625,20 +645,24 @@ async function initiateKeyExchange() {
   try {
     await state.crypto.generateKeyPair();
     const publicKey = await state.crypto.exportPublicKey();
-    send({ type: 'key-exchange', publicKey });
+    send({ type: 'key-exchange', publicKey, isInitiator: true });
   } catch (err) {
     console.error('Key generation failed:', err);
     addSystemNotice('⚠️ Encryption setup failed. Refresh and try again.');
   }
 }
 
-async function handleKeyExchange(peerPublicKeyJwk) {
+async function handleKeyExchange(peerPublicKeyJwk, isInitiator) {
   try {
-    // If we don't have a key pair yet, generate one and send ours
+    // If we don't have a key pair yet, generate one
     if (!state.crypto.keyPair) {
       await state.crypto.generateKeyPair();
+    }
+
+    // If the peer initiated this exchange, we MUST reply with our own public key
+    if (isInitiator) {
       const publicKey = await state.crypto.exportPublicKey();
-      send({ type: 'key-exchange', publicKey });
+      send({ type: 'key-exchange', publicKey, isInitiator: false });
     }
 
     const peerPublicKey = await state.crypto.importPeerPublicKey(peerPublicKeyJwk);
@@ -772,7 +796,28 @@ async function sendMessage() {
   }
 }
 
+// Simple and robust helper to avoid E2EE race conditions during page reload / reconnect handshakes
+function ensureE2EEReady() {
+  if (state.isEncrypted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const check = setInterval(() => {
+      if (state.isEncrypted) {
+        clearInterval(check);
+        resolve();
+      }
+    }, 50);
+    // Timeout after 10 seconds just to avoid infinite loop
+    setTimeout(() => {
+      clearInterval(check);
+      resolve();
+    }, 10000);
+  });
+}
+
 async function handleEncryptedMessage(msg) {
+  // Wait for E2EE keys to be fully derived/re-established before decrypting
+  await ensureE2EEReady();
+  
   try {
     const plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
     appendMessage({
@@ -815,6 +860,9 @@ async function handleEncryptedMessage(msg) {
 
 async function handleMessageHistory(messages) {
   if (!messages || messages.length === 0) return;
+  
+  // Wait for E2EE keys to be fully derived/re-established before processing history
+  await ensureE2EEReady();
   
   for (const msg of messages) {
     try {
@@ -1685,15 +1733,23 @@ function initEventListeners() {
     }, 80);
   });
 
-  // Destroy old messages (older than 10 minutes)
-  dom.cleanLogsBtn.addEventListener('click', () => {
-    if (confirm('Bhai, kya aap sach me 10 minute pehele ke saare messages dono side aur server se permanently destroy karna chahte hain?')) {
-      send({
-        type: 'destroy-old-messages',
-        roomCode: state.roomCode
-      });
-    }
-  });
+  // Silently purge messages older than 10 minutes from the UI automatically every 10 seconds
+  setInterval(() => {
+    const threshold = Date.now() - 600000;
+    const messageElements = document.querySelectorAll('.message-wrapper');
+    messageElements.forEach(el => {
+      const tsVal = el.dataset.timestamp;
+      if (tsVal) {
+        const timestamp = parseInt(tsVal, 10);
+        if (timestamp < threshold) {
+          el.style.transition = 'all 0.4s ease';
+          el.style.opacity = '0';
+          el.style.transform = 'translateY(-10px)';
+          setTimeout(() => el.remove(), 400);
+        }
+      }
+    });
+  }, 10000);
 
   // Auto-resize textarea
   dom.messageInput.addEventListener('input', () => {
@@ -1736,40 +1792,12 @@ function initEventListeners() {
     }
   });
 
-  // Close room info and emoji picker when clicking outside
+  // Close room info when clicking outside
   document.addEventListener('click', (e) => {
     if (!dom.roomInfoPanel.contains(e.target) && !dom.roomInfoBtn.contains(e.target)) {
       hideRoomInfo();
     }
-    if (dom.emojiPickerPanel && dom.emojiBtn && !dom.emojiPickerPanel.contains(e.target) && !dom.emojiBtn.contains(e.target)) {
-      dom.emojiPickerPanel.classList.add('hidden');
-    }
   });
-
-  // ── Emoji Picker Bindings ──
-  if (dom.emojiBtn) {
-    dom.emojiBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      dom.emojiPickerPanel.classList.toggle('hidden');
-    });
-  }
-
-  if (dom.emojiPickerPanel) {
-    dom.emojiPickerPanel.addEventListener('click', (e) => {
-      const span = e.target.closest('.emoji-picker-grid span');
-      if (span) {
-        e.stopPropagation();
-        const emoji = span.textContent;
-        const start = dom.messageInput.selectionStart;
-        const end = dom.messageInput.selectionEnd;
-        const val = dom.messageInput.value;
-        dom.messageInput.value = val.substring(0, start) + emoji + val.substring(end);
-        dom.messageInput.selectionStart = dom.messageInput.selectionEnd = start + emoji.length;
-        dom.messageInput.focus();
-        dom.emojiPickerPanel.classList.add('hidden');
-      }
-    });
-  }
 
   // ── Call Buttons ──
   dom.audioCallBtn.addEventListener('click', () => startCall('audio'));
@@ -1850,7 +1878,8 @@ async function handleWindowFocus() {
         type: 'join-room',
         roomCode: state.roomCode,
         username: state.username,
-        userId: state.userId
+        userId: state.userId,
+        combinedKey: state.combinedKey
       });
     } catch (err) {
       console.warn('Instant reconnect on focus/online failed, fallback to backoff:', err);
@@ -1939,14 +1968,14 @@ function handleIncomingCall(msg) {
   if (msg.callType === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
-    state.speakerMode = 'earpiece';
+    state.speakerMode = 'earpiece'; // Both audio and video calls default to earpiece
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
     dom.audioCallUi.classList.remove('hidden');
-    state.speakerMode = 'earpiece';
+    state.speakerMode = 'earpiece'; // Both audio and video calls default to earpiece
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     dom.callOverlay.classList.remove('video-active');
@@ -1972,14 +2001,14 @@ async function startCall(type) {
   if (type === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
-    state.speakerMode = 'earpiece';
+    state.speakerMode = 'earpiece'; // Both audio and video calls default to earpiece
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
     dom.audioCallUi.classList.remove('hidden');
-    state.speakerMode = 'earpiece';
+    state.speakerMode = 'earpiece'; // Both audio and video calls default to earpiece
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     dom.callOverlay.classList.remove('video-active');
@@ -2157,8 +2186,8 @@ async function setupWebRTC() {
     // Apply audio routing (Earpiece default for both audio & video calls)
     applyAudioRouting();
 
-    // Start proximity sensor for earpiece mode (works for audio AND video calls)
-    if (state.speakerMode === 'earpiece') {
+    // Start proximity sensor for earpiece mode (ONLY for audio calls)
+    if (state.speakerMode === 'earpiece' && state.callType !== 'video') {
       startProximitySensor();
     }
   };
@@ -2456,8 +2485,10 @@ async function toggleLoudspeaker() {
   // Toggle state
   if (state.speakerMode === 'speaker') {
     state.speakerMode = 'earpiece';
-    // Start proximity detection in earpiece mode
-    startProximitySensor();
+    // Start proximity detection in earpiece mode (ONLY for audio calls)
+    if (state.callType !== 'video') {
+      startProximitySensor();
+    }
   } else {
     state.speakerMode = 'speaker';
     // Stop proximity detection in speaker mode
@@ -2474,59 +2505,52 @@ function applyAudioRouting() {
   const audioTracks = state.remoteStream.getAudioTracks();
   if (audioTracks.length === 0) return;
 
-  // Stop current active sources to prevent duplicates
-  dom.remoteVideo.srcObject = null;
-  dom.remoteAudio.srcObject = null;
-
   if (state.speakerMode === 'speaker') {
     // ═══ LOUDSPEAKER MODE ═══
     // Route full stream (audio+video) through <video> element at full volume
-    dom.remoteVideo.srcObject = state.remoteStream;
-    dom.remoteVideo.muted = false;
-    dom.remoteVideo.volume = 1.0;
-    dom.remoteAudio.srcObject = null;
-
-    // Force play
-    dom.remoteVideo.play().catch(() => {});
+    // Only re-bind if the source stream has changed, preventing black screens/glitches
+    if (dom.remoteVideo.srcObject !== state.remoteStream) {
+      dom.remoteVideo.srcObject = state.remoteStream;
+      dom.remoteVideo.muted = false;
+      dom.remoteVideo.volume = 1.0;
+      dom.remoteVideo.play().catch(() => {});
+      _trySetSinkId(dom.remoteVideo, 'speaker');
+    }
+    
+    if (dom.remoteAudio.srcObject) {
+      dom.remoteAudio.srcObject = null;
+    }
 
     dom.callSpeakerBtn.classList.add('active');
     dom.callSpeakerBtn.title = 'Switch to Earpiece';
     addCallSystemNotice('🔊 Switched to Loudspeaker', false);
 
-    // Try setSinkId for speaker device
-    _trySetSinkId(dom.remoteVideo, 'speaker');
-
   } else {
     // ═══ EARPIECE MODE ═══
     // Critical: Route audio through a SEPARATE <audio> element.
-    // To force iOS and Android mobile OS to route WebRTC audio to the earpiece speaker,
-    // we MUST completely unbind any video streams from the <video> element. 
-    // If a <video> element is rendering a stream on screen, the OS locks the audio session
-    // to "media playback" (loudspeaker) channel. Leaving only an <audio> element active
-    // shifts the OS classification to "voice call communication" (earpiece).
     const audioOnlyStream = new MediaStream(audioTracks);
-    dom.remoteAudio.srcObject = audioOnlyStream;
-    dom.remoteAudio.muted = false;
-    dom.remoteAudio.volume = 1.0;
-
-    // Force explicit play — mobile browsers block autoplay
-    const playPromise = dom.remoteAudio.play();
-    if (playPromise) {
-      playPromise.catch(() => {
-        // Retry once after a small delay
-        setTimeout(() => { dom.remoteAudio.play().catch(() => {}); }, 200);
-      });
+    if (!dom.remoteAudio.srcObject || dom.remoteAudio.srcObject.getAudioTracks()[0]?.id !== audioTracks[0].id) {
+      dom.remoteAudio.srcObject = audioOnlyStream;
+      dom.remoteAudio.muted = false;
+      dom.remoteAudio.volume = 1.0;
+      
+      const playPromise = dom.remoteAudio.play();
+      if (playPromise) {
+        playPromise.catch(() => {
+          setTimeout(() => { dom.remoteAudio.play().catch(() => {}); }, 200);
+        });
+      }
+      _trySetSinkId(dom.remoteAudio, 'earpiece');
     }
 
     // Completely clear remote video rendering in earpiece mode to force earpiece routing
-    dom.remoteVideo.srcObject = null;
+    if (dom.remoteVideo.srcObject) {
+      dom.remoteVideo.srcObject = null;
+    }
 
     dom.callSpeakerBtn.classList.remove('active');
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
     addCallSystemNotice('🔇 Switched to Earpiece', false);
-
-    // Try setSinkId for earpiece device
-    _trySetSinkId(dom.remoteAudio, 'earpiece');
   }
 }
 
@@ -2663,10 +2687,11 @@ function resetCallUI() {
   state.pendingWebRTCSignals = [];
   
   // Reset speaker defaults
-  state.speakerMode = 'speaker';
+  // Reset speaker defaults (Default both to earpiece)
+  state.speakerMode = 'earpiece';
   if (dom.callSpeakerBtn) {
-    dom.callSpeakerBtn.classList.add('active');
-    dom.callSpeakerBtn.title = 'Switch to Earpiece';
+    dom.callSpeakerBtn.classList.remove('active');
+    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
   }
   
   dom.callOverlay.classList.remove('video-active');
@@ -2888,8 +2913,10 @@ async function restoreSavedSession() {
       state.secretPhrase = savedSecretPhrase;
     }
     if (savedCombinedKey) {
-      dom.keyInput1.value = savedCombinedKey.substring(0, 4);
-      dom.keyInput2.value = savedCombinedKey.substring(4, 8);
+      const boxes = document.querySelectorAll('.key-box');
+      boxes.forEach((box, idx) => {
+        if (box) box.value = savedCombinedKey[idx] || '';
+      });
       state.combinedKey = savedCombinedKey;
     }
 
@@ -2910,7 +2937,8 @@ async function restoreSavedSession() {
         type: 'join-room',
         roomCode: savedRoomCode,
         username: savedUsername,
-        userId: savedUserId
+        userId: savedUserId,
+        combinedKey: state.combinedKey
       });
     } catch (err) {
       console.error('Session restoration WebSocket connection failed:', err);
