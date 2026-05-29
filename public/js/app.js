@@ -271,8 +271,7 @@ function initParticles() {
 function getWsUrl() {
   // Agar website github par chal rahi hai to naya render wala backend url use karo
   if (location.hostname.includes('github.io')) {
-    // NOTE: Yahan par aapko apna actual Render WebSocket URL daalna padega
-    return 'wss://YOUR_RENDER_APP_NAME.onrender.com'; 
+    return 'wss://cryptchat-p.onrender.com'; 
   }
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${location.host}`;
@@ -321,6 +320,10 @@ function connectWebSocket() {
 
     ws.onmessage = (event) => {
       try {
+        // Reset heartbeat on any incoming server message (Bug #14)
+        if (state._heartbeatReset) {
+          state._heartbeatReset();
+        }
         const msg = JSON.parse(event.data);
         handleServerMessage(msg);
       } catch (err) {
@@ -393,6 +396,7 @@ async function handleServerMessage(msg) {
       state.userId = msg.userId;
       state.upperKey = msg.upperKey;
       state.lowerKey = msg.lowerKey;
+      state.combinedKey = msg.upperKey + msg.lowerKey; // Set combinedKey for room creator (Bug #12)
       
       // Save session to storage for persistence across reloads/background sleep
       saveSessionToStorage();
@@ -410,6 +414,10 @@ async function handleServerMessage(msg) {
       enableInput();
       addSystemNotice('🔒 E2E Encrypted');
       flushPendingSendQueue();
+      // Clear key materials from memory after key derivation (Bug #17)
+      state.combinedKey = null;
+      state.secretPhrase = null;
+      saveSessionToStorage();
 
       // Reset button
       dom.createRoomBtn.disabled = false;
@@ -452,6 +460,10 @@ async function handleServerMessage(msg) {
             state.isEncrypted = true;
             updateEncryptionStatus(true);
             addSystemNotice('🔒 E2E Encrypted');
+            // Clear key materials from memory after key derivation (Bug #17)
+            state.combinedKey = null;
+            state.secretPhrase = null;
+            saveSessionToStorage();
           } else {
             updateEncryptionStatus(state.isEncrypted);
           }
@@ -494,6 +506,10 @@ async function handleServerMessage(msg) {
       enableInput();
       addSystemNotice('🔒 E2E Encrypted');
       flushPendingSendQueue();
+      // Clear key materials from memory after key derivation (Bug #17)
+      state.combinedKey = null;
+      state.secretPhrase = null;
+      saveSessionToStorage();
       break;
 
     case 'peer-joined':
@@ -871,7 +887,7 @@ async function handleMessageHistory(messages) {
         continue;
       }
 
-      const isSent = msg.fromUsername === state.username;
+      const isSent = msg.from === state.userId;
       const plaintext = await state.crypto.decrypt(msg.iv, msg.ciphertext);
 
       appendMessage({
@@ -1440,7 +1456,9 @@ function disableInput() {
   if (dom.attachBtn) dom.attachBtn.disabled = true;
   if (dom.emojiBtn) {
     dom.emojiBtn.disabled = true;
-    dom.emojiPickerPanel.classList.add('hidden');
+    if (dom.emojiPickerPanel) {
+      dom.emojiPickerPanel.classList.add('hidden');
+    }
   }
   dom.sendBtn.disabled = true;
   
@@ -1968,9 +1986,9 @@ function handleIncomingCall(msg) {
   if (msg.callType === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
-    state.speakerMode = 'earpiece'; // Both audio and video calls default to earpiece
-    dom.callSpeakerBtn.classList.remove('active');
-    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+    state.speakerMode = 'speaker'; // Video call defaults to loudspeaker
+    dom.callSpeakerBtn.classList.add('active');
+    dom.callSpeakerBtn.title = 'Switch to Earpiece';
     dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
@@ -2001,9 +2019,9 @@ async function startCall(type) {
   if (type === 'video') {
     dom.videoGrid.classList.remove('hidden');
     dom.audioCallUi.classList.add('hidden');
-    state.speakerMode = 'earpiece'; // Both audio and video calls default to earpiece
-    dom.callSpeakerBtn.classList.remove('active');
-    dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
+    state.speakerMode = 'speaker'; // Video call defaults to loudspeaker
+    dom.callSpeakerBtn.classList.add('active');
+    dom.callSpeakerBtn.title = 'Switch to Earpiece';
     dom.callOverlay.classList.add('video-active');
   } else {
     dom.videoGrid.classList.add('hidden');
@@ -2171,8 +2189,13 @@ async function setupWebRTC() {
     if (!state.remoteStream) {
       state.remoteStream = new MediaStream();
     }
+    
+    const hasVideo = event.streams[0].getVideoTracks().length > 0;
+    
     event.streams[0].getTracks().forEach(track => {
-      state.remoteStream.addTrack(track);
+      if (!state.remoteStream.getTracks().find(t => t.id === track.id)) {
+        state.remoteStream.addTrack(track);
+      }
     });
 
     state.callState = 'connected';
@@ -2182,6 +2205,14 @@ async function setupWebRTC() {
     
     // Start active call timer display
     startCallTimer();
+
+    // Force bind remote video stream immediately when video track is received (Bug fix: prevent black screen)
+    if (hasVideo && state.callType === 'video') {
+      if (dom.remoteVideo.srcObject !== state.remoteStream) {
+        dom.remoteVideo.srcObject = state.remoteStream;
+        dom.remoteVideo.play().catch(() => {});
+      }
+    }
 
     // Apply audio routing (Earpiece default for both audio & video calls)
     applyAudioRouting();
@@ -2356,6 +2387,7 @@ function startProximitySensor() {
 function _startGyroscopeProximity() {
   // Use accelerometer + gyroscope to detect phone-to-ear gesture
   // Beta > 70° = phone is vertical and likely near ear
+  window.removeEventListener('deviceorientation', handleDeviceOrientation);
   window.addEventListener('deviceorientation', handleDeviceOrientation);
 }
 
@@ -2543,9 +2575,17 @@ function applyAudioRouting() {
       _trySetSinkId(dom.remoteAudio, 'earpiece');
     }
 
-    // Completely clear remote video rendering in earpiece mode to force earpiece routing
-    if (dom.remoteVideo.srcObject) {
-      dom.remoteVideo.srcObject = null;
+    // Handle remote video element in earpiece mode (Bug fix: prevent black screen in video calls)
+    if (state.callType === 'video') {
+      if (dom.remoteVideo.srcObject !== state.remoteStream) {
+        dom.remoteVideo.srcObject = state.remoteStream;
+        dom.remoteVideo.play().catch(() => {});
+      }
+      dom.remoteVideo.muted = true; // Mute video element to prevent forcing loudspeaker output on some browsers
+    } else {
+      if (dom.remoteVideo.srcObject) {
+        dom.remoteVideo.srcObject = null;
+      }
     }
 
     dom.callSpeakerBtn.classList.remove('active');
@@ -2686,7 +2726,6 @@ function resetCallUI() {
   state.callType = null;
   state.pendingWebRTCSignals = [];
   
-  // Reset speaker defaults
   // Reset speaker defaults (Default both to earpiece)
   state.speakerMode = 'earpiece';
   if (dom.callSpeakerBtn) {
@@ -2777,7 +2816,7 @@ async function sendEncryptedFile(file) {
 }
 
 function detectInAppBrowser() {
-  const ua = navigator.userAgent || navigator.vendor || window.opera;
+  const ua = navigator.userAgent || navigator.vendor || '';
   const isInApp = (
     ua.includes('FBAN') || 
     ua.includes('FBAV') || 
@@ -2884,12 +2923,7 @@ function saveSessionToStorage() {
     sessionStorage.setItem('cryptchat_room_code', state.roomCode);
     sessionStorage.setItem('cryptchat_user_id', state.userId);
     sessionStorage.setItem('cryptchat_username', state.username);
-    if (state.secretPhrase) {
-      sessionStorage.setItem('cryptchat_secret_phrase', state.secretPhrase);
-    }
-    if (state.combinedKey) {
-      sessionStorage.setItem('cryptchat_combined_key', state.combinedKey);
-    }
+    // Plaintext secrets NEVER written to sessionStorage to prevent XSS readout (Bug #6)
   }
 }
 

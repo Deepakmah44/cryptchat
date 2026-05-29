@@ -1,33 +1,57 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DB_PATH = path.join(__dirname, 'database.json');
 
-// Helper to load DB
+let dbData = null;
+let isWriting = false;
+let needsWrite = false;
+
+// Helper to load DB (in-memory caching)
 function loadDB() {
+  if (dbData) return dbData;
   try {
     if (!fs.existsSync(DB_PATH)) {
-      const initial = { rooms: {}, rateLimits: {}, messages: [] };
-      fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
-      return initial;
+      dbData = { rooms: {}, rateLimits: {}, messages: [] };
+      fs.writeFileSync(DB_PATH, JSON.stringify(dbData, null, 2));
+      return dbData;
     }
     const content = fs.readFileSync(DB_PATH, 'utf8');
-    return JSON.parse(content || '{"rooms":{},"rateLimits":{},"messages":[]}');
+    dbData = JSON.parse(content || '{"rooms":{},"rateLimits":{},"messages":[]}');
+    return dbData;
   } catch (err) {
     console.error('Database load error, resetting...', err);
-    return { rooms: {}, rateLimits: {}, messages: [] };
+    dbData = { rooms: {}, rateLimits: {}, messages: [] };
+    return dbData;
   }
 }
 
-// Helper to save DB atomically
-function saveDB(data) {
+// Helper to save DB asynchronously using a non-blocking queue
+async function writeToDisk() {
+  if (isWriting) {
+    needsWrite = true;
+    return;
+  }
+  isWriting = true;
+  needsWrite = false;
+  
   const tempPath = DB_PATH + '.tmp';
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
-    fs.renameSync(tempPath, DB_PATH);
+    await fs.promises.writeFile(tempPath, JSON.stringify(dbData, null, 2));
+    await fs.promises.rename(tempPath, DB_PATH);
   } catch (err) {
     console.error('Database save error', err);
+  } finally {
+    isWriting = false;
+    if (needsWrite) {
+      setImmediate(writeToDisk);
+    }
   }
+}
+
+function saveDB() {
+  writeToDisk();
 }
 
 module.exports = {
@@ -54,7 +78,7 @@ module.exports = {
       createdAt: Date.now(),
       lastActivity: Date.now()
     };
-    saveDB(db);
+    saveDB();
     return db.rooms[uuid];
   },
   updateRoomConnections(uuid, delta) {
@@ -62,7 +86,17 @@ module.exports = {
     if (db.rooms[uuid]) {
       db.rooms[uuid].activeConnections = Math.max(0, db.rooms[uuid].activeConnections + delta);
       db.rooms[uuid].lastActivity = Date.now();
-      saveDB(db);
+      saveDB();
+      return db.rooms[uuid];
+    }
+    return null;
+  },
+  setRoomConnections(uuid, count) {
+    const db = loadDB();
+    if (db.rooms[uuid]) {
+      db.rooms[uuid].activeConnections = Math.max(0, count);
+      db.rooms[uuid].lastActivity = Date.now();
+      saveDB();
       return db.rooms[uuid];
     }
     return null;
@@ -71,12 +105,12 @@ module.exports = {
     const db = loadDB();
     delete db.rooms[uuid];
     db.messages = db.messages.filter(m => m.roomUuid !== uuid);
-    saveDB(db);
+    saveDB();
   },
   clearMessagesForRoom(uuid) {
     const db = loadDB();
     db.messages = db.messages.filter(m => m.roomUuid !== uuid);
-    saveDB(db);
+    saveDB();
   },
 
   // Rate Limiting
@@ -87,7 +121,7 @@ module.exports = {
     // Clear limit after 15 mins (900000ms) of inactivity
     if (Date.now() - limit.lastAttempt > 900000) {
       delete db.rateLimits[ip];
-      saveDB(db);
+      saveDB();
       return { failedAttempts: 0, lastAttempt: 0 };
     }
     return limit;
@@ -99,14 +133,14 @@ module.exports = {
     }
     db.rateLimits[ip].failedAttempts += 1;
     db.rateLimits[ip].lastAttempt = Date.now();
-    saveDB(db);
+    saveDB();
     return db.rateLimits[ip];
   },
   clearRateLimit(ip) {
     const db = loadDB();
     if (db.rateLimits[ip]) {
       delete db.rateLimits[ip];
-      saveDB(db);
+      saveDB();
     }
   },
 
@@ -114,27 +148,58 @@ module.exports = {
   saveMessage(roomUuid, payload) {
     const db = loadDB();
     const msg = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: crypto.randomUUID(),
       roomUuid,
       payload,
       createdAt: Date.now()
     };
     db.messages.push(msg);
-    saveDB(db);
+    saveDB();
     return msg;
   },
   getMessages(roomUuid) {
     const db = loadDB();
     return db.messages.filter(m => m.roomUuid === roomUuid);
   },
+  deleteMessage(messageId) {
+    const db = loadDB();
+    const initialCount = db.messages.length;
+    db.messages = db.messages.filter(m => m.payload.messageId !== messageId);
+    if (db.messages.length !== initialCount) {
+      saveDB();
+      return true;
+    }
+    return false;
+  },
+  editMessage(messageId, newIv, newCiphertext) {
+    const db = loadDB();
+    let updated = false;
+    db.messages = db.messages.map(m => {
+      if (m.payload.messageId === messageId) {
+        m.payload.iv = newIv;
+        m.payload.ciphertext = newCiphertext;
+        m.payload.isEdited = true;
+        updated = true;
+      }
+      return m;
+    });
+    if (updated) {
+      saveDB();
+      return true;
+    }
+    return false;
+  },
   purgeExpiredMessages() {
     const db = loadDB();
     const tenMinutesAgo = Date.now() - 600000;
-    const initialCount = db.messages.length;
-    db.messages = db.messages.filter(m => m.createdAt > tenMinutesAgo);
-    if (db.messages.length !== initialCount) {
-      saveDB(db);
+    const expiredMessages = db.messages.filter(m => m.createdAt <= tenMinutesAgo);
+    if (expiredMessages.length > 0) {
+      const purgedRoomUuids = new Set(expiredMessages.map(m => m.roomUuid));
+      db.messages = db.messages.filter(m => m.createdAt > tenMinutesAgo);
+      saveDB();
+      return Array.from(purgedRoomUuids);
     }
+    return [];
   },
   purgeInactiveRooms() {
     const db = loadDB();
@@ -150,7 +215,7 @@ module.exports = {
       }
     }
     if (purged) {
-      saveDB(db);
+      saveDB();
     }
   }
 };

@@ -43,7 +43,7 @@ self.addEventListener('fetch', (event) => {
   }
   
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
+    caches.match(event.request, { ignoreSearch: true }).then((cachedResponse) => {
       if (cachedResponse) {
         // Return cached asset, fetch fresh version in background for next time (Stale-While-Revalidate)
         fetch(event.request).then((networkResponse) => {

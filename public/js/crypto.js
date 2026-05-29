@@ -85,6 +85,7 @@ class CryptoEngine {
    * Derive shared AES-256-GCM key from own private key + peer's public key
    */
   async deriveSharedKey(peerPublicKey) {
+    this.peerPublicKey = peerPublicKey; // Cache peer public key for verification code derivation
     this.sharedKey = await crypto.subtle.deriveKey(
       { name: 'ECDH', public: peerPublicKey },
       this.keyPair.privateKey,
@@ -158,10 +159,10 @@ class CryptoEngine {
    * Generate a verification code from shared key (for visual verification)
    */
   async getVerificationCode() {
-    if (!this.sharedKey || !this.keyPair) return null;
+    if (!this.sharedKey || !this.peerPublicKey || !this.keyPair) return null;
     const exported = await crypto.subtle.exportKey('raw', 
       await crypto.subtle.deriveKey(
-        { name: 'ECDH', public: this.keyPair.publicKey },
+        { name: 'ECDH', public: this.peerPublicKey },
         this.keyPair.privateKey,
         { name: 'AES-GCM', length: 256 },
         true,

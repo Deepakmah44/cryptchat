@@ -53,15 +53,16 @@ function generateUserId() {
 function generateSecureKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let result = '';
-  const bytes = crypto.randomBytes(4);
+  // Cryptographically uniform selection to eliminate modulo bias (Bug #3)
   for (let i = 0; i < 4; i++) {
-    result += chars[bytes[i] % chars.length];
+    result += chars[crypto.randomInt(0, chars.length)];
   }
   return result;
 }
 
 function hashKey(combinedKey) {
-  const salt = 'CryptChat::StaticSalt::ForVerification';
+  // Deterministic salt unique to each combinedKey to prevent precomputed tables across rooms (Bug #4)
+  const salt = crypto.createHash('sha256').update(combinedKey + 'CryptChat::DeterministicSalt').digest('hex');
   return crypto.scryptSync(combinedKey, salt, 64).toString('hex');
 }
 
@@ -102,8 +103,10 @@ wss.on('connection', (ws, req) => {
   let currentRoom = null;
   let currentUser = null;
 
-  // Extract client IP address securely
-  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  // Extract client IP address securely and sanitize proxy header input (Bug #2)
+  const clientIp = req.headers['x-forwarded-for']
+    ? req.headers['x-forwarded-for'].split(',')[0].trim()
+    : req.socket.remoteAddress || 'unknown';
 
   // WebSocket Origin Validation (prevent cross-site WebSocket hijacking)
   const origin = req.headers.origin || '';
@@ -185,7 +188,7 @@ wss.on('connection', (ws, req) => {
 
         // Initialize active socket relay
         activeSockets.set(roomCode, [currentUser]);
-        db.updateRoomConnections(roomCode, 1);
+        db.setRoomConnections(roomCode, 1); // Exact count mapping (Bug #9)
 
         ws.send(JSON.stringify({
           type: 'room-created',
@@ -228,9 +231,7 @@ wss.on('connection', (ws, req) => {
             room = db.getRoomByKeyHash(incomingHash);
             
             if (!room) {
-              // The room was purged or wiped due to server restart on ephemeral storage.
-              // Since they entered the correct keys, we deterministically derive the room code 
-              // from the key hash and recreate the room on the fly to guarantee persistence!
+              // Ephemeral storage recovery path
               const derivedRoomCode = crypto.createHash('sha256').update(incomingHash).digest('hex').substring(0, 8).toUpperCase();
               db.createRoom(derivedRoomCode, incomingHash);
               room = db.getRoom(derivedRoomCode);
@@ -243,6 +244,8 @@ wss.on('connection', (ws, req) => {
           if (room) {
             roomCode = room.uuid;
           } else {
+            // Record failed authentication attempt before returning error (Bug #1)
+            db.recordFailedAttempt(clientIp);
             ws.send(JSON.stringify({ type: 'error', message: 'Secure room not found or invalid keys.' }));
             return;
           }
@@ -257,15 +260,22 @@ wss.on('connection', (ws, req) => {
         }
         const activeUsers = activeSockets.get(roomCode);
 
-        // Clear disconnected users immediately to allow reconnects
-        const discoIdx = activeUsers.findIndex(u => !u.ws || u.ws.readyState !== 1);
-        if (discoIdx !== -1) {
-          const discoUser = activeUsers[discoIdx];
-          if (discoUser.disconnectTimeout) {
-            clearTimeout(discoUser.disconnectTimeout);
+        // Clear all disconnected users immediately to allow reconnects (Bug #8 & #9)
+        let cleanedCount = 0;
+        const remainingUsers = activeUsers.filter(u => {
+          if (!u.ws || u.ws.readyState !== 1) {
+            if (u.disconnectTimeout) {
+              clearTimeout(u.disconnectTimeout);
+            }
+            cleanedCount++;
+            return false;
           }
-          activeUsers.splice(discoIdx, 1);
-          db.updateRoomConnections(roomCode, -1);
+          return true;
+        });
+
+        if (cleanedCount > 0) {
+          activeSockets.set(roomCode, remainingUsers);
+          db.setRoomConnections(roomCode, remainingUsers.length);
           room = db.getRoom(roomCode);
         }
 
@@ -322,7 +332,7 @@ wss.on('connection', (ws, req) => {
         currentRoom = roomCode;
         activeUsers.push(currentUser);
 
-        db.updateRoomConnections(roomCode, 1);
+        db.setRoomConnections(roomCode, activeUsers.length); // Direct state synchronization (Bug #9)
         const peer = activeUsers.find(u => u.id !== currentUser.id);
 
         ws.send(JSON.stringify({
@@ -399,7 +409,6 @@ wss.on('connection', (ws, req) => {
       case 'message-opened':
       case 'message-read': {
         if (!currentRoom || !currentUser) return;
-        // Purging is automatic via TTL index / routine to preserve DB stateless messages tracking
         broadcastToRoom(currentRoom, {
           type: msg.type,
           messageId: msg.messageId
@@ -409,6 +418,7 @@ wss.on('connection', (ws, req) => {
 
       case 'edit-message': {
         if (!currentRoom || !currentUser) return;
+        db.editMessage(msg.messageId, msg.iv, msg.ciphertext); // Persist edit updates in database (Bug #20)
         broadcastToRoom(currentRoom, {
           type: 'edit-message',
           messageId: msg.messageId,
@@ -421,6 +431,7 @@ wss.on('connection', (ws, req) => {
 
       case 'unsend-message': {
         if (!currentRoom || !currentUser) return;
+        db.deleteMessage(msg.messageId); // Persist unsend deletes in database (Bug #19)
         broadcastToRoom(currentRoom, {
           type: 'unsend-message',
           messageId: msg.messageId,
@@ -464,7 +475,7 @@ wss.on('connection', (ws, req) => {
               
               const filtered = activeUsers.filter(u => u.id !== currentUser.id);
               activeSockets.set(currentRoom, filtered);
-              db.updateRoomConnections(currentRoom, -1);
+              db.setRoomConnections(currentRoom, filtered.length);
 
               if (filtered.length === 0) {
                 // Room is completely empty, schedule deletion after 3 minutes
@@ -474,18 +485,19 @@ wss.on('connection', (ws, req) => {
                     activeSockets.delete(roomToDelete);
                     db.deleteRoom(roomToDelete);
                   }
-                }, 180000); // 3 minutes grace period
+                }, 180000);
               }
             } else {
-              activeSockets.set(currentRoom, activeUsers.filter(u => u.id !== currentUser.id));
-              db.updateRoomConnections(currentRoom, -1);
+              const filtered = activeUsers.filter(u => u.id !== currentUser.id);
+              activeSockets.set(currentRoom, filtered);
+              db.setRoomConnections(currentRoom, filtered.length);
 
               broadcastToRoom(currentRoom, {
                 type: 'peer-left',
                 username: currentUser.username
               });
 
-              if (activeSockets.get(currentRoom).length === 0) {
+              if (filtered.length === 0) {
                 activeSockets.delete(currentRoom);
                 db.clearMessagesForRoom(currentRoom); // Wipe chat but keep room
               }
@@ -497,13 +509,56 @@ wss.on('connection', (ws, req) => {
         break;
       }
 
-      case 'call-invite':
-      case 'call-accept':
-      case 'call-decline':
-      case 'call-hangup':
+      // Secure Whitelisted WebRTC & Calling Signal Forwarding (Bug #5)
+      case 'call-invite': {
+        if (!currentRoom || !currentUser) return;
+        const sanitized = {
+          type: 'call-invite',
+          callType: typeof msg.callType === 'string' ? msg.callType : 'audio',
+          from: currentUser.id
+        };
+        broadcastToRoom(currentRoom, sanitized, ws);
+        break;
+      }
+
+      case 'call-accept': {
+        if (!currentRoom || !currentUser) return;
+        broadcastToRoom(currentRoom, { type: 'call-accept' }, ws);
+        break;
+      }
+
+      case 'call-decline': {
+        if (!currentRoom || !currentUser) return;
+        const sanitized = { type: 'call-decline' };
+        if (msg.reason === 'busy') sanitized.reason = 'busy';
+        broadcastToRoom(currentRoom, sanitized, ws);
+        break;
+      }
+
+      case 'call-hangup': {
+        if (!currentRoom || !currentUser) return;
+        broadcastToRoom(currentRoom, { type: 'call-hangup' }, ws);
+        break;
+      }
+
       case 'webrtc-signal': {
         if (!currentRoom || !currentUser) return;
-        broadcastToRoom(currentRoom, msg, ws);
+        const sanitized = { type: 'webrtc-signal' };
+        if (msg.sdp && typeof msg.sdp === 'object') {
+          sanitized.sdp = {
+            type: typeof msg.sdp.type === 'string' ? msg.sdp.type : '',
+            sdp: typeof msg.sdp.sdp === 'string' ? msg.sdp.sdp : ''
+          };
+        } else if (msg.candidate && typeof msg.candidate === 'object') {
+          sanitized.candidate = {
+            candidate: typeof msg.candidate.candidate === 'string' ? msg.candidate.candidate : '',
+            sdpMid: typeof msg.candidate.sdpMid === 'string' ? msg.candidate.sdpMid : null,
+            sdpMLineIndex: typeof msg.candidate.sdpMLineIndex === 'number' ? msg.candidate.sdpMLineIndex : null
+          };
+        } else {
+          return;
+        }
+        broadcastToRoom(currentRoom, sanitized, ws);
         break;
       }
     }
@@ -530,7 +585,7 @@ wss.on('connection', (ws, req) => {
 
           const filtered = uList.filter(u => u.id !== disconnectedUser.id);
           activeSockets.set(disconnectedRoom, filtered);
-          db.updateRoomConnections(disconnectedRoom, -1);
+          db.setRoomConnections(disconnectedRoom, filtered.length);
 
           if (filtered.length === 0) {
             activeSockets.delete(disconnectedRoom);
@@ -551,16 +606,18 @@ wss.on('connection', (ws, req) => {
 // Purge expired TTL messages and inactive rooms automatically every 30 seconds
 setInterval(() => {
   try {
-    db.purgeExpiredMessages();
+    const purgedRooms = db.purgeExpiredMessages();
     db.purgeInactiveRooms();
     
-    // Broadcast the purge event to all active rooms so clients clear them instantly
+    // Broadcast the purge event ONLY to active rooms where messages were actually destroyed (Bug #16)
     const threshold = Date.now() - 600000;
-    activeSockets.forEach((users, roomCode) => {
-      broadcastToRoom(roomCode, {
-        type: 'old-messages-destroyed',
-        threshold: threshold
-      });
+    purgedRooms.forEach(roomCode => {
+      if (activeSockets.has(roomCode)) {
+        broadcastToRoom(roomCode, {
+          type: 'old-messages-destroyed',
+          threshold: threshold
+        });
+      }
     });
   } catch (e) {
     console.error('Auto-purge background task failed:', e);
@@ -573,6 +630,3 @@ server.listen(PORT, () => {
   console.log(`     → Local:   http://localhost:${PORT}`);
   console.log(`     → Network: http://0.0.0.0:${PORT}\n`);
 });
-
-// Live reload trigger: 2026-05-27T11:18:00
-
