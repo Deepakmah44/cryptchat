@@ -158,7 +158,6 @@ body {
   flex-direction: column;
   align-items: center;
   gap: var(--space-lg);
-  animation: fadeInUp 0.6s ease-out;
 }
 
 /* Logo */
@@ -168,6 +167,8 @@ body {
   flex-direction: column;
   align-items: center;
   gap: var(--space-sm);
+  animation: acceleratedFadeInDown 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
 }
 
 .logo-icon {
@@ -181,6 +182,11 @@ body {
 .logo-icon svg {
   width: 100%;
   height: 100%;
+  transition: transform 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  will-change: transform;
+}
+.logo-icon:hover svg {
+  transform: scale(1.1) rotate(6deg);
 }
 
 .logo-text {
@@ -206,6 +212,8 @@ body {
   gap: var(--space-sm);
   flex-wrap: wrap;
   justify-content: center;
+  animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) both 0.12s;
+  will-change: opacity;
 }
 
 .badge {
@@ -222,12 +230,14 @@ body {
   letter-spacing: 0.4px;
   text-transform: uppercase;
   transition: all var(--transition-fast);
+  will-change: transform;
 }
 .badge:hover {
   background: rgba(37, 99, 235, 0.06);
   border-color: rgba(37, 99, 235, 0.3);
   color: var(--text-accent);
   box-shadow: 0 0 10px rgba(37, 99, 235, 0.1);
+  transform: translate3d(0, -1.5px, 0);
 }
 
 .badge-icon {
@@ -266,6 +276,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
+  animation: acceleratedFadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) both 0.22s;
+  will-change: transform, opacity;
 }
 
 .input-group {
@@ -1184,6 +1196,16 @@ input[type="password"] {
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(24px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes acceleratedFadeInUp {
+  from { opacity: 0; transform: translate3d(0, 16px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes acceleratedFadeInDown {
+  from { opacity: 0; transform: translate3d(0, -16px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes fadeIn {

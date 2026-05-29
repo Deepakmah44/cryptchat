@@ -1136,8 +1136,12 @@ function addSystemNotice(text) {
 }
 
 function scrollToBottom() {
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   requestAnimationFrame(() => {
-    dom.messagesContainer.scrollTop = dom.messagesContainer.scrollHeight;
+    dom.messagesContainer.scrollTo({
+      top: dom.messagesContainer.scrollHeight,
+      behavior: prefersReducedMotion ? 'auto' : 'smooth'
+    });
   });
 }
 
