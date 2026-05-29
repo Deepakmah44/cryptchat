@@ -273,7 +273,7 @@ wss.on('connection', (ws, req) => {
           return true;
         });
 
-        if (cleanedCount > 0) {
+        if (cleanedCount > 0 || room.activeConnections !== remainingUsers.length) {
           activeSockets.set(roomCode, remainingUsers);
           db.setRoomConnections(roomCode, remainingUsers.length);
           room = db.getRoom(roomCode);

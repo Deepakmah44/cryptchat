@@ -37,6 +37,7 @@ const state = {
   audioCtx: null,
   callStartTime: null,
   pendingWebRTCSignals: [],
+  pendingCandidates: [],
   callTimerInterval: null,
   cameraFacingMode: 'user',
   pendingSendQueue: [],
@@ -2122,10 +2123,7 @@ async function setupWebRTC() {
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
-      autoGainControl: true,
-      channelCount: 1, // Mono audio — earpiece is mono, saves bandwidth
-      sampleRate: 48000, // Opus native rate
-      sampleSize: 16
+      autoGainControl: true
     },
     video: state.callType === 'video' ? {
       width: { ideal: 640, max: 1280 },
@@ -2190,13 +2188,21 @@ async function setupWebRTC() {
       state.remoteStream = new MediaStream();
     }
     
-    const hasVideo = event.streams[0].getVideoTracks().length > 0;
-    
-    event.streams[0].getTracks().forEach(track => {
+    const track = event.track;
+    if (track) {
       if (!state.remoteStream.getTracks().find(t => t.id === track.id)) {
         state.remoteStream.addTrack(track);
       }
-    });
+    }
+
+    const streams = event.streams;
+    if (streams && streams.length > 0) {
+      streams[0].getTracks().forEach(t => {
+        if (!state.remoteStream.getTracks().find(x => x.id === t.id)) {
+          state.remoteStream.addTrack(t);
+        }
+      });
+    }
 
     state.callState = 'connected';
     if (!state.callStartTime) {
@@ -2206,13 +2212,7 @@ async function setupWebRTC() {
     // Start active call timer display
     startCallTimer();
 
-    // Force bind remote video stream immediately when video track is received (Bug fix: prevent black screen)
-    if (hasVideo && state.callType === 'video') {
-      if (dom.remoteVideo.srcObject !== state.remoteStream) {
-        dom.remoteVideo.srcObject = state.remoteStream;
-        dom.remoteVideo.play().catch(() => {});
-      }
-    }
+
 
     // Apply audio routing (Earpiece default for both audio & video calls)
     applyAudioRouting();
@@ -2260,8 +2260,28 @@ async function handleWebRTCSignal(msg) {
           sdp: answer
         });
       }
+
+      // Process any queued candidates now that remote description is set
+      if (state.pendingCandidates && state.pendingCandidates.length > 0) {
+        console.log(`Processing ${state.pendingCandidates.length} queued ICE candidates`);
+        for (const candidate of state.pendingCandidates) {
+          try {
+            await state.peerConnection.addIceCandidate(candidate);
+          } catch (e) {
+            console.error('Error adding queued ICE candidate:', e);
+          }
+        }
+        state.pendingCandidates = [];
+      }
     } else if (msg.candidate) {
-      await state.peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+      const candidate = new RTCIceCandidate(msg.candidate);
+      if (state.peerConnection.remoteDescription && state.peerConnection.remoteDescription.type) {
+        await state.peerConnection.addIceCandidate(candidate);
+      } else {
+        if (!state.pendingCandidates) state.pendingCandidates = [];
+        state.pendingCandidates.push(candidate);
+        console.log('Queued incoming ICE candidate (remoteDescription not yet set)');
+      }
     }
   } catch (err) {
     console.error('Error processing WebRTC signal:', err);
@@ -2540,8 +2560,9 @@ function applyAudioRouting() {
   if (state.speakerMode === 'speaker') {
     // ═══ LOUDSPEAKER MODE ═══
     // Route full stream (audio+video) through <video> element at full volume
-    // Only re-bind if the source stream has changed, preventing black screens/glitches
-    if (dom.remoteVideo.srcObject !== state.remoteStream) {
+    // Only re-bind if the source stream has changed or lacks audio tracks, preventing black screens/glitches
+    const currentStream = dom.remoteVideo.srcObject;
+    if (currentStream !== state.remoteStream || !currentStream || currentStream.getAudioTracks().length === 0) {
       dom.remoteVideo.srcObject = state.remoteStream;
       dom.remoteVideo.muted = false;
       dom.remoteVideo.volume = 1.0;
@@ -2575,10 +2596,16 @@ function applyAudioRouting() {
       _trySetSinkId(dom.remoteAudio, 'earpiece');
     }
 
-    // Handle remote video element in earpiece mode (Bug fix: prevent black screen in video calls)
+    // Handle remote video element in earpiece mode (Bug fix: prevent black screen in video calls and force earpiece audio routing)
     if (state.callType === 'video') {
-      if (dom.remoteVideo.srcObject !== state.remoteStream) {
-        dom.remoteVideo.srcObject = state.remoteStream;
+      const videoTracks = state.remoteStream.getVideoTracks();
+      const videoOnlyStream = new MediaStream(videoTracks);
+      const currentStream = dom.remoteVideo.srcObject;
+      const currentTrackId = currentStream && currentStream.getVideoTracks()[0]?.id;
+      const newTrackId = videoTracks[0]?.id;
+
+      if (!currentStream || currentTrackId !== newTrackId || currentStream.getAudioTracks().length > 0) {
+        dom.remoteVideo.srcObject = videoOnlyStream;
         dom.remoteVideo.play().catch(() => {});
       }
       dom.remoteVideo.muted = true; // Mute video element to prevent forcing loudspeaker output on some browsers
@@ -2725,6 +2752,7 @@ function resetCallUI() {
   state.callState = 'idle';
   state.callType = null;
   state.pendingWebRTCSignals = [];
+  state.pendingCandidates = [];
   
   // Reset speaker defaults (Default both to earpiece)
   state.speakerMode = 'earpiece';
