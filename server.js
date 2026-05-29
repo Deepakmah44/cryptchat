@@ -26,7 +26,8 @@ app.use((req, res, next) => {
   // Content Security Policy: Restrict all resource origins
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' https://webrtc.github.io",
+    "script-src 'self' blob: https://webrtc.github.io",
+    "worker-src 'self' blob:",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "connect-src 'self' wss: ws:",

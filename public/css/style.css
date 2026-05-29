@@ -1338,6 +1338,10 @@ input[type="password"] {
     padding: 10px 12px;
     padding-bottom: calc(10px + var(--safe-bottom));
   }
+
+  #send-btn {
+    display: none !important;
+  }
 }
 /* Tablets and up */
 @media (min-width: 768px) {
@@ -2558,6 +2562,20 @@ input[type="password"] {
 .minimized-action-btn svg {
   width: 14px;
   height: 14px;
+}
+
+/* Voice Changer active glow button styling */
+#call-voice-change-btn.active {
+  background: linear-gradient(135deg, #ec4899 0%, #d946ef 100%) !important; /* Rose-to-fuchsia female accent gradient */
+  border-color: #ec4899 !important;
+  color: #fff !important;
+  box-shadow: 0 0 16px rgba(236, 72, 153, 0.6) !important;
+  animation: voicePulse 1.8s infinite ease-in-out;
+}
+
+@keyframes voicePulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 16px rgba(236, 72, 153, 0.6); }
+  50% { transform: scale(1.06); box-shadow: 0 0 24px rgba(236, 72, 153, 0.85); }
 }
 
 

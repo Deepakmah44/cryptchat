@@ -42,6 +42,10 @@ const state = {
   cameraFacingMode: 'user',
   pendingSendQueue: [],
   proximityBlackout: false,
+  isCaller: false,
+  voiceChangerActive: false,
+  voiceContext: null,
+  voiceDest: null,
 };
 
 // ── DOM Refs ──
@@ -105,6 +109,7 @@ const dom = {
   callHangupBtn: $('#call-hangup-btn'),
   callProximityOverlay: $('#call-proximity-overlay'),
   callMinimizeBtn: $('#call-minimize-btn'),
+  callVoiceChangeBtn: $('#call-voice-change-btn'),
   minimizedControlsOverlay: $('#minimized-controls-overlay'),
   minimizedMaximizeBtn: $('#minimized-maximize-btn'),
   minimizedHangupBtn: $('#minimized-hangup-btn'),
@@ -1840,6 +1845,9 @@ function initEventListeners() {
     dom.callFlipCameraBtn.addEventListener('click', flipCamera);
   }
   dom.callSpeakerBtn.addEventListener('click', toggleLoudspeaker);
+  if (dom.callVoiceChangeBtn) {
+    dom.callVoiceChangeBtn.addEventListener('click', toggleVoiceChanger);
+  }
   if (dom.callProximityOverlay) {
     dom.callProximityOverlay.addEventListener('dblclick', () => {
       toggleProximityOverlay(false);
@@ -2009,6 +2017,7 @@ function handleIncomingCall(msg) {
 
   state.callState = 'ringing';
   state.callType = msg.callType;
+  state.isCaller = false;
   dom.callPeerTitle.textContent = state.peerUsername || 'Someone';
   dom.callStatusLabel.textContent = `Incoming ${msg.callType} call...`;
   
@@ -2040,6 +2049,7 @@ async function startCall(type) {
 
   state.callState = 'calling';
   state.callType = type;
+  state.isCaller = true;
   dom.callPeerTitle.textContent = state.peerUsername || 'Someone';
   dom.callStatusLabel.textContent = `Calling...`;
 
@@ -2172,6 +2182,15 @@ async function setupWebRTC() {
       dom.callVideoToggleBtn.classList.remove('disabled');
     } else {
       dom.callVideoToggleBtn.classList.add('disabled');
+    }
+    
+    // Show/hide voice changer based on caller identity
+    if (dom.callVoiceChangeBtn) {
+      if (state.isCaller) {
+        dom.callVoiceChangeBtn.classList.remove('hidden');
+      } else {
+        dom.callVoiceChangeBtn.classList.add('hidden');
+      }
     }
   } catch (err) {
     console.error('Media stream capture failed:', err);
@@ -2759,12 +2778,216 @@ function maximizeCall() {
   addCallSystemNotice('🗖 Call maximized', false);
 }
 
+async function initVoiceChanger() {
+  if (state.voiceContext) return;
+
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  state.voiceContext = new AudioContextClass({ latencyCategory: 'interactive' });
+
+  const workletCode = `
+  class PitchShifterProcessor extends AudioWorkletProcessor {
+    static get parameterDescriptors() {
+      return [{ name: 'pitch', defaultValue: 1.65, minValue: 0.5, maxValue: 2.0 }];
+    }
+
+    constructor() {
+      super();
+      this.bufferSize = 8192;
+      this.buffer = new Float32Array(this.bufferSize);
+      this.writePos = 0;
+      this.readPos = 0;
+      this.size = 2048;
+    }
+
+    process(inputs, outputs, parameters) {
+      const input = inputs[0];
+      const output = outputs[0];
+      if (!input || input.length === 0 || !input[0]) return true;
+
+      const inputChannel = input[0];
+      const outputChannel = output[0];
+      const len = inputChannel.length;
+      const pitch = parameters.pitch ? parameters.pitch[0] : 1.65;
+
+      for (let i = 0; i < len; i++) {
+        this.buffer[this.writePos] = inputChannel[i];
+
+        const offset1 = this.readPos;
+        const offset2 = (this.readPos + this.size / 2) % this.size;
+
+        const tap1Pos = (this.writePos - offset1 + this.bufferSize) % this.bufferSize;
+        const tap2Pos = (this.writePos - offset2 + this.bufferSize) % this.bufferSize;
+
+        const tap1Int = Math.floor(tap1Pos);
+        const tap1Frac = tap1Pos - tap1Int;
+        const val1 = (1 - tap1Frac) * this.buffer[tap1Int] + tap1Frac * this.buffer[(tap1Int + 1) % this.bufferSize];
+
+        const tap2Int = Math.floor(tap2Pos);
+        const tap2Frac = tap2Pos - tap2Int;
+        const val2 = (1 - tap2Frac) * this.buffer[tap2Int] + tap2Frac * this.buffer[(tap2Int + 1) % this.bufferSize];
+
+        const w = offset1 / this.size;
+        const gain1 = 0.5 * (1 - Math.cos(2 * Math.PI * w));
+        const gain2 = 1.0 - gain1;
+
+        outputChannel[i] = val1 * gain1 + val2 * gain2;
+
+        const step = 1.0 - pitch;
+        this.readPos = (this.readPos + step + this.size) % this.size;
+        this.writePos = (this.writePos + 1) % this.bufferSize;
+      }
+
+      for (let c = 1; c < output.length; c++) {
+        if (output[c]) {
+          output[c].set(outputChannel);
+        }
+      }
+
+      return true;
+    }
+  }
+
+  registerProcessor('pitch-shifter-processor', PitchShifterProcessor);
+  `;
+
+  const blob = new Blob([workletCode], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  try {
+    await state.voiceContext.audioWorklet.addModule(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function toggleVoiceChanger() {
+  if (!state.localStream || !state.peerConnection) return;
+  const audioTrack = state.localStream.getAudioTracks()[0];
+  if (!audioTrack) return;
+
+  const sender = state.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
+  if (!sender) return;
+
+  state.voiceChangerActive = !state.voiceChangerActive;
+
+  if (state.voiceChangerActive) {
+    try {
+      dom.callVoiceChangeBtn.disabled = true;
+      dom.callVoiceChangeBtn.title = "Initializing Voice Changer...";
+
+      await initVoiceChanger();
+
+      if (state.voiceContext.state === 'suspended') {
+        await state.voiceContext.resume();
+      }
+
+      const micStream = new MediaStream([audioTrack]);
+      const sourceNode = state.voiceContext.createMediaStreamSource(micStream);
+
+      const hpFilter = state.voiceContext.createBiquadFilter();
+      hpFilter.type = 'highpass';
+      hpFilter.frequency.setValueAtTime(150, state.voiceContext.currentTime);
+
+      const pitchNode = new AudioWorkletNode(state.voiceContext, 'pitch-shifter-processor');
+      const pitchParam = pitchNode.parameters.get('pitch');
+      if (pitchParam) {
+        pitchParam.setValueAtTime(1.65, state.voiceContext.currentTime);
+      }
+
+      const f1Resonance = state.voiceContext.createBiquadFilter();
+      f1Resonance.type = 'peaking';
+      f1Resonance.frequency.setValueAtTime(1200, state.voiceContext.currentTime);
+      f1Resonance.Q.setValueAtTime(1.2, state.voiceContext.currentTime);
+      f1Resonance.gain.setValueAtTime(3.0, state.voiceContext.currentTime);
+
+      const f2Resonance = state.voiceContext.createBiquadFilter();
+      f2Resonance.type = 'peaking';
+      f2Resonance.frequency.setValueAtTime(2800, state.voiceContext.currentTime);
+      f2Resonance.Q.setValueAtTime(1.5, state.voiceContext.currentTime);
+      f2Resonance.gain.setValueAtTime(4.0, state.voiceContext.currentTime);
+
+      const highShelf = state.voiceContext.createBiquadFilter();
+      highShelf.type = 'highshelf';
+      highShelf.frequency.setValueAtTime(6000, state.voiceContext.currentTime);
+      highShelf.gain.setValueAtTime(2.0, state.voiceContext.currentTime);
+
+      state.voiceDest = state.voiceContext.createMediaStreamDestination();
+
+      sourceNode.connect(hpFilter);
+      hpFilter.connect(pitchNode);
+      pitchNode.connect(f1Resonance);
+      f1Resonance.connect(f2Resonance);
+      f2Resonance.connect(highShelf);
+      highShelf.connect(state.voiceDest);
+
+      const processedTrack = state.voiceDest.stream.getAudioTracks()[0];
+      await sender.replaceTrack(processedTrack);
+
+      state.voiceNodes = {
+        sourceNode,
+        hpFilter,
+        pitchNode,
+        f1Resonance,
+        f2Resonance,
+        highShelf
+      };
+
+      dom.callVoiceChangeBtn.classList.add('active');
+      dom.callVoiceChangeBtn.title = "Voice Changer Active (Female)";
+      addCallSystemNotice("✨ Female voice filter enabled", false);
+    } catch (err) {
+      console.error("Failed to start voice changer:", err);
+      state.voiceChangerActive = false;
+      dom.callVoiceChangeBtn.classList.remove('active');
+      dom.callVoiceChangeBtn.title = "Toggle Voice Changer (Female)";
+      addCallSystemNotice("⚠️ Voice changer activation failed", true);
+    } finally {
+      dom.callVoiceChangeBtn.disabled = false;
+    }
+  } else {
+    try {
+      await sender.replaceTrack(audioTrack);
+
+      if (state.voiceNodes) {
+        Object.values(state.voiceNodes).forEach(node => {
+          try { node.disconnect(); } catch (e) {}
+        });
+        state.voiceNodes = null;
+      }
+
+      if (state.voiceContext && state.voiceContext.state !== 'closed') {
+        await state.voiceContext.suspend();
+      }
+
+      dom.callVoiceChangeBtn.classList.remove('active');
+      dom.callVoiceChangeBtn.title = "Toggle Voice Changer (Female)";
+      addCallSystemNotice("✨ Voice changer disabled", false);
+    } catch (err) {
+      console.error("Failed to stop voice changer:", err);
+    }
+  }
+}
+
 function resetCallUI() {
   stopRingtone();
   stopCallTimer();
-  
+
   // Stop all proximity detection (sensor + gyroscope + wake lock)
   stopProximitySensor();
+
+  state.isCaller = false;
+  state.voiceChangerActive = false;
+  if (state.voiceContext) {
+    if (state.voiceContext.state !== 'closed') {
+      state.voiceContext.close().catch(() => {});
+    }
+    state.voiceContext = null;
+    state.voiceDest = null;
+  }
+  if (dom.callVoiceChangeBtn) {
+    dom.callVoiceChangeBtn.classList.remove('active');
+    dom.callVoiceChangeBtn.classList.add('hidden');
+    dom.callVoiceChangeBtn.title = "Toggle Voice Changer (Female)";
+  }
   
   if (state.callStartTime) {
     const duration = Date.now() - state.callStartTime;
