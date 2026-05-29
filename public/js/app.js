@@ -104,6 +104,10 @@ const dom = {
   callSpeakerBtn: $('#call-speaker-btn'),
   callHangupBtn: $('#call-hangup-btn'),
   callProximityOverlay: $('#call-proximity-overlay'),
+  callMinimizeBtn: $('#call-minimize-btn'),
+  minimizedControlsOverlay: $('#minimized-controls-overlay'),
+  minimizedMaximizeBtn: $('#minimized-maximize-btn'),
+  minimizedHangupBtn: $('#minimized-hangup-btn'),
   // Emoji Picker DOM Refs (Removed in favor of native system keyboard emoji selector)
   emojiBtn: null,
   emojiPickerPanel: null,
@@ -1838,6 +1842,29 @@ function initEventListeners() {
     });
   }
 
+  // ── Floating Minimized Call Listeners ──
+  if (dom.callMinimizeBtn) {
+    dom.callMinimizeBtn.addEventListener('click', minimizeCall);
+  }
+  if (dom.minimizedMaximizeBtn) {
+    dom.minimizedMaximizeBtn.addEventListener('click', maximizeCall);
+  }
+  if (dom.minimizedHangupBtn) {
+    dom.minimizedHangupBtn.addEventListener('click', hangupCall);
+  }
+  if (dom.callOverlay) {
+    dom.callOverlay.addEventListener('click', (e) => {
+      if (dom.callOverlay.classList.contains('minimized')) {
+        if (e.target.closest('#minimized-hangup-btn')) return;
+        if (e.target.closest('#minimized-maximize-btn')) {
+          maximizeCall();
+          return;
+        }
+        dom.callOverlay.classList.toggle('touched');
+      }
+    });
+  }
+
   // ── File Attachment Trigger ──
   if (dom.attachBtn) {
     dom.attachBtn.addEventListener('click', () => {
@@ -2716,6 +2743,18 @@ function stopCallTimer() {
   }
 }
 
+function minimizeCall() {
+  if (state.callState === 'idle') return;
+  dom.callOverlay.classList.add('minimized');
+  addCallSystemNotice('🗗 Call minimized', false);
+}
+
+function maximizeCall() {
+  dom.callOverlay.classList.remove('minimized');
+  dom.callOverlay.classList.remove('touched');
+  addCallSystemNotice('🗖 Call maximized', false);
+}
+
 function resetCallUI() {
   stopRingtone();
   stopCallTimer();
@@ -2761,6 +2800,8 @@ function resetCallUI() {
     dom.callSpeakerBtn.title = 'Switch to Loudspeaker';
   }
   
+  dom.callOverlay.classList.remove('minimized');
+  dom.callOverlay.classList.remove('touched');
   dom.callOverlay.classList.remove('video-active');
   dom.callOverlay.classList.add('hidden');
 }

@@ -2382,4 +2382,160 @@ input[type="password"] {
   animation: spin 1s linear infinite;
 }
 
+/* ── Minimized floating popup view for calls ── */
+.call-overlay.minimized {
+  width: 140px;
+  height: 210px;
+  top: auto;
+  left: auto;
+  bottom: calc(85px + env(safe-area-inset-bottom, 0px));
+  right: 20px;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: auto;
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--accent-cyan);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+  transition: all var(--transition-normal);
+  z-index: 105;
+}
+
+.call-overlay.minimized .call-backdrop {
+  display: none;
+}
+
+.call-overlay.minimized .call-container {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+
+.call-overlay.minimized .video-grid {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
+  border: none;
+  margin: 0;
+  z-index: 1;
+}
+
+.call-overlay.minimized .remote-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.call-overlay.minimized .local-video {
+  width: 40px;
+  height: 60px;
+  top: 8px;
+  right: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+}
+
+/* Hide call controls and info in minimized mode, show a small action overlay instead */
+.call-overlay.minimized .call-info,
+.call-overlay.minimized .call-controls {
+  display: none !important;
+}
+
+.call-overlay.minimized .audio-call-ui {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.call-overlay.minimized .call-avatar-wrapper {
+  width: 70px;
+  height: 70px;
+}
+
+.call-overlay.minimized .call-avatar {
+  width: 60px;
+  height: 60px;
+}
+
+.call-overlay.minimized .call-avatar svg {
+  width: 24px;
+  height: 24px;
+}
+
+.call-overlay.minimized .call-ripple-ring {
+  width: 60px;
+  height: 60px;
+}
+
+/* Minimized interaction controls (Maximize / Hangup overlay on hover/click) */
+.minimized-controls-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity var(--transition-fast);
+}
+
+.call-overlay.minimized:hover .minimized-controls-overlay,
+.call-overlay.minimized.touched .minimized-controls-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.minimized-action-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.minimized-action-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.08);
+}
+
+.minimized-action-btn.hangup {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+.minimized-action-btn.hangup:hover {
+  background: #dc2626;
+}
+
+.minimized-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 
