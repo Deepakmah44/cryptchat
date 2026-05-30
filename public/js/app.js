@@ -43,12 +43,10 @@ const state = {
   pendingSendQueue: [],
   proximityBlackout: false,
   isCaller: false,
-  voiceChangerActive: false,
-  voiceContext: null,
-  voiceDest: null,
-  voiceNodes: null,
-  originalAudioTrack: null,
   minimizedAutoHideTimer: null,
+  callControlsAutoHideTimer: null,
+  remoteAudioContext: null,
+  remoteAudioSourceNode: null,
 };
 
 // ── DOM Refs ──
@@ -112,7 +110,6 @@ const dom = {
   callHangupBtn: $('#call-hangup-btn'),
   callProximityOverlay: $('#call-proximity-overlay'),
   callMinimizeBtn: $('#call-minimize-btn'),
-  callVoiceChangeBtn: $('#call-voice-change-btn'),
   minimizedControlsOverlay: $('#minimized-controls-overlay'),
   minimizedMaximizeBtn: $('#minimized-maximize-btn'),
   minimizedHangupBtn: $('#minimized-hangup-btn'),
@@ -1595,6 +1592,19 @@ function initEventListeners() {
     });
   });
 
+  // ── Sub-Tab Switching (Room Code Join vs Create) ──
+  const subTabBtns = document.querySelectorAll('.sub-tab-btn');
+  const subTabContents = document.querySelectorAll('.sub-tab-content');
+  subTabBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const subtab = btn.dataset.subtab;
+      subTabBtns.forEach(b => b.classList.remove('active'));
+      subTabContents.forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(`subtab-${subtab}`).classList.add('active');
+    });
+  });
+
   // ── Personal Chat — Connect with secret phrase ──
   dom.personalConnectBtn.addEventListener('click', async () => {
     let username = dom.usernameInput.value.trim();
@@ -1860,9 +1870,6 @@ function initEventListeners() {
     dom.callFlipCameraBtn.addEventListener('click', flipCamera);
   }
   dom.callSpeakerBtn.addEventListener('click', toggleLoudspeaker);
-  if (dom.callVoiceChangeBtn) {
-    dom.callVoiceChangeBtn.addEventListener('click', toggleVoiceChanger);
-  }
   if (dom.callProximityOverlay) {
     dom.callProximityOverlay.addEventListener('dblclick', () => {
       toggleProximityOverlay(false);
@@ -1891,6 +1898,20 @@ function initEventListeners() {
         if (hasMoved) return;
 
         triggerMinimizedControlsTouched();
+      } else {
+        triggerCallControlsInteraction();
+      }
+    });
+
+    dom.callOverlay.addEventListener('mousemove', () => {
+      if (!dom.callOverlay.classList.contains('minimized')) {
+        triggerCallControlsInteraction();
+      }
+    });
+
+    dom.callOverlay.addEventListener('touchstart', () => {
+      if (!dom.callOverlay.classList.contains('minimized')) {
+        triggerCallControlsInteraction();
       }
     });
   }
@@ -2096,6 +2117,7 @@ async function startCall(type) {
   }
 
   dom.callOverlay.classList.remove('hidden');
+  triggerCallControlsInteraction();
   startRingtone(false);
 
   send({
@@ -2118,6 +2140,7 @@ async function acceptCall() {
 
   try {
     await setupWebRTC();
+    triggerCallControlsInteraction();
   } catch (err) {
     console.error('WebRTC setup failed:', err);
     hangupCall();
@@ -2138,6 +2161,7 @@ async function handleCallAccepted() {
   
   state.callState = 'connecting';
   dom.callStatusLabel.textContent = `Connecting...`;
+  triggerCallControlsInteraction();
 
   try {
     await setupWebRTC();
@@ -2205,14 +2229,6 @@ async function setupWebRTC() {
       dom.callVideoToggleBtn.classList.add('disabled');
     }
     
-    // Show/hide voice changer based on caller identity
-    if (dom.callVoiceChangeBtn) {
-      if (state.isCaller) {
-        dom.callVoiceChangeBtn.classList.remove('hidden');
-      } else {
-        dom.callVoiceChangeBtn.classList.add('hidden');
-      }
-    }
   } catch (err) {
     console.error('Media stream capture failed:', err);
     addSystemNotice('⚠️ Cam/Mic access required for calling.');
@@ -2630,6 +2646,15 @@ function applyAudioRouting() {
 
   if (state.speakerMode === 'speaker') {
     // ═══ LOUDSPEAKER MODE ═══
+    // Disconnect earpiece AudioContext if active
+    if (state.remoteAudioSourceNode) {
+      try { state.remoteAudioSourceNode.disconnect(); } catch (e) {}
+      state.remoteAudioSourceNode = null;
+    }
+    if (state.remoteAudioContext && state.remoteAudioContext.state !== 'closed') {
+      state.remoteAudioContext.suspend().catch(() => {});
+    }
+
     // Route full stream (audio+video) through <video> element at full volume
     // Only re-bind if the source stream has changed or lacks audio tracks, preventing black screens/glitches
     const currentStream = dom.remoteVideo.srcObject;
@@ -2651,7 +2676,7 @@ function applyAudioRouting() {
 
   } else {
     // ═══ EARPIECE MODE ═══
-    // Critical: Route audio through a SEPARATE <audio> element.
+    // 1. Play through <audio> tag with offscreen fallback
     const audioOnlyStream = new MediaStream(audioTracks);
     if (!dom.remoteAudio.srcObject || dom.remoteAudio.srcObject.getAudioTracks()[0]?.id !== audioTracks[0].id) {
       dom.remoteAudio.srcObject = audioOnlyStream;
@@ -2665,6 +2690,27 @@ function applyAudioRouting() {
         });
       }
       _trySetSinkId(dom.remoteAudio, 'earpiece');
+    }
+
+    // 2. Web Audio API Earpiece Routing Bypass (Guaranteed to play on earpiece on Android/iOS calls!)
+    try {
+      if (!state.remoteAudioContext) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        state.remoteAudioContext = new AudioContextClass({ latencyCategory: 'playout' });
+      }
+      
+      if (state.remoteAudioContext.state === 'suspended') {
+        state.remoteAudioContext.resume().catch(() => {});
+      }
+
+      if (state.remoteAudioSourceNode) {
+        try { state.remoteAudioSourceNode.disconnect(); } catch (e) {}
+      }
+
+      state.remoteAudioSourceNode = state.remoteAudioContext.createMediaStreamSource(audioOnlyStream);
+      state.remoteAudioSourceNode.connect(state.remoteAudioContext.destination);
+    } catch (err) {
+      console.warn('Web Audio API earpiece routing warning, falling back to standard element:', err);
     }
 
     // Handle remote video element in earpiece mode (Bug fix: prevent black screen in video calls and force earpiece audio routing)
@@ -3040,257 +3086,61 @@ function toggleMinimizedSize() {
 
   addCallSystemNotice(isCompact ? '🗖 Floating window enlarged' : '🗗 Floating window compressed', false);
 }
-
-async function initVoiceChanger() {
-  if (state.voiceContext) return;
-
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  state.voiceContext = new AudioContextClass({ latencyCategory: 'interactive' });
-
-  const workletCode = `
-  class PitchShifterProcessor extends AudioWorkletProcessor {
-    static get parameterDescriptors() {
-      return [{ name: 'pitch', defaultValue: 1.45, minValue: 0.5, maxValue: 2.0 }];
-    }
-
-    constructor() {
-      super();
-      this.bufferSize = 4096;
-      this.buffer = new Float32Array(this.bufferSize);
-      this.writePos = 0;
-      
-      // Grain size: 768 samples is the magic sweet spot. Lower values sound buzzy, higher sound like metallic echo.
-      this.grainSize = 768; 
-      this.numGrains = 4;
-      this.grainOffsets = new Float32Array(this.numGrains);
-      for (let i = 0; i < this.numGrains; i++) {
-        this.grainOffsets[i] = (i * this.grainSize) / this.numGrains;
-      }
-    }
-
-    process(inputs, outputs, parameters) {
-      const input = inputs[0];
-      const output = outputs[0];
-      if (!input || input.length === 0 || !input[0]) return true;
-
-      const inputChannel = input[0];
-      const outputChannel = output[0];
-      const len = inputChannel.length;
-      const pitch = parameters.pitch ? parameters.pitch[0] : 1.45;
-
-      for (let i = 0; i < len; i++) {
-        this.buffer[this.writePos] = inputChannel[i];
-
-        let outSample = 0;
-        let sumWindow = 0;
-
-        for (let g = 0; g < this.numGrains; g++) {
-          const offset = this.grainOffsets[g];
-          const phase = offset / this.grainSize;
-          
-          // Hann window power-complementary crossfade
-          const win = Math.sin(Math.PI * phase);
-          const winSquared = win * win;
-
-          // Read index
-          const tapPos = (this.writePos - offset + this.bufferSize) % this.bufferSize;
-          
-          // Linear interpolation for smooth pitch resample
-          const tapInt = Math.floor(tapPos);
-          const tapFrac = tapPos - tapInt;
-          const val = (1 - tapFrac) * this.buffer[tapInt] + tapFrac * this.buffer[(tapInt + 1) % this.bufferSize];
-
-          outSample += val * winSquared;
-          sumWindow += winSquared;
-
-          // Shift phase position based on pitch ratio
-          const step = 1.0 - pitch;
-          this.grainOffsets[g] = (this.grainOffsets[g] + step + this.grainSize) % this.grainSize;
-        }
-
-        // Avoid division by zero, normalize to prevent tremolo
-        outputChannel[i] = sumWindow > 0.001 ? outSample / sumWindow : outSample;
-        this.writePos = (this.writePos + 1) % this.bufferSize;
-      }
-
-      for (let c = 1; c < output.length; c++) {
-        if (output[c]) {
-          output[c].set(outputChannel);
-        }
-      }
-
-      return true;
-    }
+function triggerCallControlsInteraction() {
+  if (state.callState === 'idle' || dom.callOverlay.classList.contains('minimized')) {
+    return;
   }
 
-  registerProcessor('pitch-shifter-processor', PitchShifterProcessor);
-  `;
-
-  const blob = new Blob([workletCode], { type: 'application/javascript' });
-  const url = URL.createObjectURL(blob);
-  try {
-    await state.voiceContext.audioWorklet.addModule(url);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-async function toggleVoiceChanger() {
-  if (!state.localStream || !state.peerConnection) return;
-  const audioTrack = state.localStream.getAudioTracks()[0];
-  if (!audioTrack) return;
-
-  // Save original mic track reference for reliable restore
-  if (!state.originalAudioTrack) {
-    state.originalAudioTrack = audioTrack;
+  const callContainer = dom.callOverlay.querySelector('.call-container');
+  if (callContainer) {
+    callContainer.classList.remove('controls-hidden');
   }
 
-  const sender = state.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
-  if (!sender) return;
+  if (state.callControlsAutoHideTimer) {
+    clearTimeout(state.callControlsAutoHideTimer);
+  }
 
-  state.voiceChangerActive = !state.voiceChangerActive;
-
-  if (state.voiceChangerActive) {
-    try {
-      dom.callVoiceChangeBtn.disabled = true;
-      dom.callVoiceChangeBtn.title = "Initializing Voice Changer...";
-
-      await initVoiceChanger();
-
-      if (state.voiceContext.state === 'suspended') {
-        await state.voiceContext.resume();
+  state.callControlsAutoHideTimer = setTimeout(() => {
+    if (state.callState !== 'idle' && !dom.callOverlay.classList.contains('minimized')) {
+      const activeContainer = dom.callOverlay.querySelector('.call-container');
+      if (activeContainer) {
+        activeContainer.classList.add('controls-hidden');
       }
-
-      const micStream = new MediaStream([audioTrack]);
-      const sourceNode = state.voiceContext.createMediaStreamSource(micStream);
-
-      const hpFilter = state.voiceContext.createBiquadFilter();
-      hpFilter.type = 'highpass';
-      hpFilter.frequency.setValueAtTime(170, state.voiceContext.currentTime);
-      hpFilter.Q.setValueAtTime(1.0, state.voiceContext.currentTime);
-
-      const bodyFilter = state.voiceContext.createBiquadFilter();
-      bodyFilter.type = 'peaking';
-      bodyFilter.frequency.setValueAtTime(260, state.voiceContext.currentTime);
-      bodyFilter.Q.setValueAtTime(1.2, state.voiceContext.currentTime);
-      bodyFilter.gain.setValueAtTime(4.0, state.voiceContext.currentTime);
-
-      const nasalCutFilter = state.voiceContext.createBiquadFilter();
-      nasalCutFilter.type = 'peaking';
-      nasalCutFilter.frequency.setValueAtTime(680, state.voiceContext.currentTime);
-      nasalCutFilter.Q.setValueAtTime(1.5, state.voiceContext.currentTime);
-      nasalCutFilter.gain.setValueAtTime(-6.0, state.voiceContext.currentTime);
-
-      const pitchNode = new AudioWorkletNode(state.voiceContext, 'pitch-shifter-processor');
-      const pitchParam = pitchNode.parameters.get('pitch');
-      if (pitchParam) {
-        pitchParam.setValueAtTime(1.42, state.voiceContext.currentTime); // Sweet young female ratio (around 1.42 - 1.45)
-      }
-
-      const presenceFilter = state.voiceContext.createBiquadFilter();
-      presenceFilter.type = 'peaking';
-      presenceFilter.frequency.setValueAtTime(1300, state.voiceContext.currentTime);
-      presenceFilter.Q.setValueAtTime(1.0, state.voiceContext.currentTime);
-      presenceFilter.gain.setValueAtTime(3.0, state.voiceContext.currentTime);
-
-      const sparkleFilter = state.voiceContext.createBiquadFilter();
-      sparkleFilter.type = 'peaking';
-      sparkleFilter.frequency.setValueAtTime(3600, state.voiceContext.currentTime);
-      sparkleFilter.Q.setValueAtTime(1.5, state.voiceContext.currentTime);
-      sparkleFilter.gain.setValueAtTime(6.0, state.voiceContext.currentTime);
-
-      const airFilter = state.voiceContext.createBiquadFilter();
-      airFilter.type = 'highshelf';
-      airFilter.frequency.setValueAtTime(7000, state.voiceContext.currentTime);
-      airFilter.gain.setValueAtTime(2.0, state.voiceContext.currentTime);
-
-      state.voiceDest = state.voiceContext.createMediaStreamDestination();
-
-      sourceNode.connect(hpFilter);
-      hpFilter.connect(bodyFilter);
-      bodyFilter.connect(nasalCutFilter);
-      nasalCutFilter.connect(pitchNode);
-      pitchNode.connect(presenceFilter);
-      presenceFilter.connect(sparkleFilter);
-      sparkleFilter.connect(airFilter);
-      airFilter.connect(state.voiceDest);
-
-      const processedTrack = state.voiceDest.stream.getAudioTracks()[0];
-      await sender.replaceTrack(processedTrack);
-
-      state.voiceNodes = {
-        sourceNode,
-        hpFilter,
-        bodyFilter,
-        nasalCutFilter,
-        pitchNode,
-        presenceFilter,
-        sparkleFilter,
-        airFilter
-      };
-
-      dom.callVoiceChangeBtn.classList.add('active');
-      dom.callVoiceChangeBtn.title = "Voice Changer Active (Female)";
-      addCallSystemNotice("✨ Female voice filter enabled", false);
-    } catch (err) {
-      console.error("Failed to start voice changer:", err);
-      state.voiceChangerActive = false;
-      dom.callVoiceChangeBtn.classList.remove('active');
-      dom.callVoiceChangeBtn.title = "Toggle Voice Changer (Female)";
-      addCallSystemNotice("⚠️ Voice changer activation failed", true);
-    } finally {
-      dom.callVoiceChangeBtn.disabled = false;
     }
-  } else {
-    try {
-      // Restore original mic track (not the currently toggled muted state)
-      const restoreTrack = state.originalAudioTrack || state.localStream.getAudioTracks()[0];
-      await sender.replaceTrack(restoreTrack);
-      state.originalAudioTrack = null;
-
-      if (state.voiceNodes) {
-        Object.values(state.voiceNodes).forEach(node => {
-          try { node.disconnect(); } catch (e) {}
-        });
-        state.voiceNodes = null;
-      }
-
-      if (state.voiceContext && state.voiceContext.state !== 'closed') {
-        await state.voiceContext.suspend();
-      }
-
-      dom.callVoiceChangeBtn.classList.remove('active');
-      dom.callVoiceChangeBtn.title = "Toggle Voice Changer (Female)";
-      addCallSystemNotice("✨ Voice changer disabled", false);
-    } catch (err) {
-      console.error("Failed to stop voice changer:", err);
-    }
-  }
+    state.callControlsAutoHideTimer = null;
+  }, 3000);
 }
 
 function resetCallUI() {
   stopRingtone();
   stopCallTimer();
 
+  // Clear earpiece audio context and source node (Bug Fix)
+  if (state.remoteAudioSourceNode) {
+    try { state.remoteAudioSourceNode.disconnect(); } catch (e) {}
+    state.remoteAudioSourceNode = null;
+  }
+  if (state.remoteAudioContext) {
+    if (state.remoteAudioContext.state !== 'closed') {
+      state.remoteAudioContext.close().catch(() => {});
+    }
+    state.remoteAudioContext = null;
+  }
+
+  // Clear autohide timer and controls-hidden class on call reset (Bug Fix)
+  if (state.callControlsAutoHideTimer) {
+    clearTimeout(state.callControlsAutoHideTimer);
+    state.callControlsAutoHideTimer = null;
+  }
+  const callContainer = dom.callOverlay.querySelector('.call-container');
+  if (callContainer) {
+    callContainer.classList.remove('controls-hidden');
+  }
+
   // Stop all proximity detection (sensor + gyroscope + wake lock)
   stopProximitySensor();
 
   state.isCaller = false;
-  state.voiceChangerActive = false;
-  state.originalAudioTrack = null;
-  state.voiceNodes = null;
-  if (state.voiceContext) {
-    if (state.voiceContext.state !== 'closed') {
-      state.voiceContext.close().catch(() => {});
-    }
-    state.voiceContext = null;
-    state.voiceDest = null;
-  }
-  if (dom.callVoiceChangeBtn) {
-    dom.callVoiceChangeBtn.classList.remove('active');
-    dom.callVoiceChangeBtn.classList.add('hidden');
-    dom.callVoiceChangeBtn.title = "Toggle Voice Changer (Female)";
-  }
   
   if (state.callStartTime) {
     const duration = Date.now() - state.callStartTime;
