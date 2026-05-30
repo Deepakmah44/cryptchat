@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=3">
+  <link rel="stylesheet" href="/css/style.css?v=4">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/img/icon.svg">
   
@@ -320,27 +320,33 @@
           </button>
         </div>
         <div id="call-actions-active" class="active-controls">
-          <button id="call-mute-btn" class="circle-btn btn-neutral" title="Mute Microphone">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v11a4 4 0 0 1-4-4v-7a4 4 0 0 1 8 0v7a4 4 0 0 1-4 4z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
-          </button>
-          <button id="call-video-toggle-btn" class="circle-btn btn-neutral" title="Toggle Camera">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-          </button>
-          <button id="call-flip-camera-btn" class="circle-btn btn-neutral" title="Flip Camera">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-          </button>
-          <button id="call-speaker-btn" class="circle-btn btn-neutral active" title="Toggle Loudspeaker">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-          </button>
-          <button id="call-voice-change-btn" class="circle-btn btn-neutral hidden" title="Toggle Voice Changer (Female)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/></svg>
-          </button>
-          <button id="call-minimize-btn" class="circle-btn btn-neutral" title="Minimize Call">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="15" x2="15" y2="9"/><line x1="15" y1="15" x2="15" y2="9"/><line x1="9" y1="9" x2="15" y2="9"/></svg>
-          </button>
-          <button id="call-hangup-btn" class="circle-btn btn-danger" title="End Call">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" transform="rotate(135 12 12)"/></svg>
-          </button>
+          <!-- Row 1: Secondary controls -->
+          <div class="call-controls-row secondary-row">
+            <button id="call-video-toggle-btn" class="circle-btn btn-neutral" title="Toggle Camera">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+            </button>
+            <button id="call-flip-camera-btn" class="circle-btn btn-neutral" title="Flip Camera">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+            <button id="call-speaker-btn" class="circle-btn btn-neutral active" title="Toggle Loudspeaker">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+            </button>
+            <button id="call-voice-change-btn" class="circle-btn btn-neutral hidden" title="Toggle Voice Changer (Female)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><circle cx="12" cy="12" r="10" stroke-dasharray="3 3"/></svg>
+            </button>
+            <button id="call-minimize-btn" class="circle-btn btn-neutral" title="Minimize Call">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="15" x2="15" y2="9"/><line x1="15" y1="15" x2="15" y2="9"/><line x1="9" y1="9" x2="15" y2="9"/></svg>
+            </button>
+          </div>
+          <!-- Row 2: Primary action controls (Mute near Hangup) -->
+          <div class="call-controls-row primary-row">
+            <button id="call-mute-btn" class="circle-btn btn-neutral" title="Mute Microphone">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v11a4 4 0 0 1-4-4v-7a4 4 0 0 1 8 0v7a4 4 0 0 1-4 4z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+            </button>
+            <button id="call-hangup-btn" class="circle-btn btn-danger" title="End Call">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91" transform="rotate(135 12 12)"/></svg>
+            </button>
+          </div>
         </div>
       </div>
       <!-- Minimized Controls Overlay -->
@@ -374,6 +380,6 @@
     </div>
   </div>
 
-  <script type="module" src="/js/app.js?v=11"></script>
+  <script type="module" src="/js/app.js?v=13"></script>
 </body>
 </html>

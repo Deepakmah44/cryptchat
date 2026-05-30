@@ -1725,12 +1725,36 @@ input[type="password"] {
   z-index: 10;
 }
 
-.incoming-controls,
-.active-controls {
+.incoming-controls {
   display: flex;
   gap: 20px;
   justify-content: center;
   align-items: center;
+}
+
+.active-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  align-items: center;
+}
+
+.call-controls-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.call-controls-row.secondary-row {
+  gap: 12px;
+}
+
+.call-controls-row.primary-row {
+  gap: 20px;
 }
 
 .circle-btn {
@@ -2527,7 +2551,6 @@ input[type="password"] {
   transition: opacity var(--transition-fast);
 }
 
-.call-overlay.minimized:hover .minimized-controls-overlay,
 .call-overlay.minimized.touched .minimized-controls-overlay {
   opacity: 1;
   pointer-events: auto;

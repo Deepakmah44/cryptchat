@@ -48,6 +48,7 @@ const state = {
   voiceDest: null,
   voiceNodes: null,
   originalAudioTrack: null,
+  minimizedAutoHideTimer: null,
 };
 
 // ── DOM Refs ──
@@ -529,6 +530,8 @@ async function handleServerMessage(msg) {
       dom.chatPeerName.textContent = msg.peerUsername;
       updateConnectionStatus('online', 'Online');
       addSystemNotice(`${msg.peerUsername} joined the room`);
+      // Re-enable call buttons when peer joins (they may have been disabled on peer-left)
+      enableInput();
       // For private rooms (starts with 'P'), when peer joins, we initiate key exchange
       if (state.roomCode.startsWith('P')) {
         await initiateKeyExchange();
@@ -548,6 +551,8 @@ async function handleServerMessage(msg) {
       state.peerUsername = msg.peerUsername;
       dom.chatPeerName.textContent = msg.peerUsername;
       updateConnectionStatus('online', 'Online');
+      // Re-enable call buttons — they were disabled when peer disconnected
+      if (state.isEncrypted) enableInput();
       break;
 
     case 'old-messages-destroyed': {
@@ -636,6 +641,11 @@ async function handleServerMessage(msg) {
       updateEncryptionStatus(false);
       disableInput();
       addSystemNotice(`${msg.username} left the room`);
+      
+      // Clean up call if peer left during active call (Bug Fix)
+      if (state.callState !== 'idle') {
+        resetCallUI();
+      }
       break;
 
     case 'error':
@@ -1359,6 +1369,9 @@ function switchToChat() {
 }
 
 function switchToJoin() {
+  // Reset any active call UI and media tracks (Bug Fix)
+  resetCallUI();
+
   dom.chatScreen.classList.remove('active');
   dom.joinScreen.classList.add('active');
   
@@ -1876,7 +1889,8 @@ function initEventListeners() {
         }
         // Suppress toggle if user just finished dragging (hasMoved flag)
         if (hasMoved) return;
-        dom.callOverlay.classList.toggle('touched');
+
+        triggerMinimizedControlsTouched();
       }
     });
   }
@@ -2776,6 +2790,16 @@ function stopCallTimer() {
   }
 }
 
+function triggerMinimizedControlsTouched() {
+  if (!dom.callOverlay || !dom.callOverlay.classList.contains('minimized')) return;
+  dom.callOverlay.classList.add('touched');
+  if (state.minimizedAutoHideTimer) clearTimeout(state.minimizedAutoHideTimer);
+  state.minimizedAutoHideTimer = setTimeout(() => {
+    dom.callOverlay.classList.remove('touched');
+    state.minimizedAutoHideTimer = null;
+  }, 1000);
+}
+
 function minimizeCall() {
   if (state.callState === 'idle') return;
   // Clear any previous dragging inline styles first
@@ -2787,6 +2811,9 @@ function minimizeCall() {
   dom.callOverlay.style.right = '';
   dom.callOverlay.classList.add('minimized');
   addCallSystemNotice('🗗 Call minimized', false);
+  
+  // Show minimized controls overlay for 1 second and then auto-hide
+  triggerMinimizedControlsTouched();
 }
 
 function maximizeCall() {
@@ -3023,16 +3050,22 @@ async function initVoiceChanger() {
   const workletCode = `
   class PitchShifterProcessor extends AudioWorkletProcessor {
     static get parameterDescriptors() {
-      return [{ name: 'pitch', defaultValue: 1.65, minValue: 0.5, maxValue: 2.0 }];
+      return [{ name: 'pitch', defaultValue: 1.45, minValue: 0.5, maxValue: 2.0 }];
     }
 
     constructor() {
       super();
-      this.bufferSize = 8192;
+      this.bufferSize = 4096;
       this.buffer = new Float32Array(this.bufferSize);
       this.writePos = 0;
-      this.readPos = 0;
-      this.size = 2048;
+      
+      // Grain size: 768 samples is the magic sweet spot. Lower values sound buzzy, higher sound like metallic echo.
+      this.grainSize = 768; 
+      this.numGrains = 4;
+      this.grainOffsets = new Float32Array(this.numGrains);
+      for (let i = 0; i < this.numGrains; i++) {
+        this.grainOffsets[i] = (i * this.grainSize) / this.numGrains;
+      }
     }
 
     process(inputs, outputs, parameters) {
@@ -3043,33 +3076,40 @@ async function initVoiceChanger() {
       const inputChannel = input[0];
       const outputChannel = output[0];
       const len = inputChannel.length;
-      const pitch = parameters.pitch ? parameters.pitch[0] : 1.65;
+      const pitch = parameters.pitch ? parameters.pitch[0] : 1.45;
 
       for (let i = 0; i < len; i++) {
         this.buffer[this.writePos] = inputChannel[i];
 
-        const offset1 = this.readPos;
-        const offset2 = (this.readPos + this.size / 2) % this.size;
+        let outSample = 0;
+        let sumWindow = 0;
 
-        const tap1Pos = (this.writePos - offset1 + this.bufferSize) % this.bufferSize;
-        const tap2Pos = (this.writePos - offset2 + this.bufferSize) % this.bufferSize;
+        for (let g = 0; g < this.numGrains; g++) {
+          const offset = this.grainOffsets[g];
+          const phase = offset / this.grainSize;
+          
+          // Hann window power-complementary crossfade
+          const win = Math.sin(Math.PI * phase);
+          const winSquared = win * win;
 
-        const tap1Int = Math.floor(tap1Pos);
-        const tap1Frac = tap1Pos - tap1Int;
-        const val1 = (1 - tap1Frac) * this.buffer[tap1Int] + tap1Frac * this.buffer[(tap1Int + 1) % this.bufferSize];
+          // Read index
+          const tapPos = (this.writePos - offset + this.bufferSize) % this.bufferSize;
+          
+          // Linear interpolation for smooth pitch resample
+          const tapInt = Math.floor(tapPos);
+          const tapFrac = tapPos - tapInt;
+          const val = (1 - tapFrac) * this.buffer[tapInt] + tapFrac * this.buffer[(tapInt + 1) % this.bufferSize];
 
-        const tap2Int = Math.floor(tap2Pos);
-        const tap2Frac = tap2Pos - tap2Int;
-        const val2 = (1 - tap2Frac) * this.buffer[tap2Int] + tap2Frac * this.buffer[(tap2Int + 1) % this.bufferSize];
+          outSample += val * winSquared;
+          sumWindow += winSquared;
 
-        const w = offset1 / this.size;
-        const gain1 = 0.5 * (1 - Math.cos(2 * Math.PI * w));
-        const gain2 = 1.0 - gain1;
+          // Shift phase position based on pitch ratio
+          const step = 1.0 - pitch;
+          this.grainOffsets[g] = (this.grainOffsets[g] + step + this.grainSize) % this.grainSize;
+        }
 
-        outputChannel[i] = val1 * gain1 + val2 * gain2;
-
-        const step = 1.0 - pitch;
-        this.readPos = (this.readPos + step + this.size) % this.size;
+        // Avoid division by zero, normalize to prevent tremolo
+        outputChannel[i] = sumWindow > 0.001 ? outSample / sumWindow : outSample;
         this.writePos = (this.writePos + 1) % this.bufferSize;
       }
 
@@ -3126,39 +3166,54 @@ async function toggleVoiceChanger() {
 
       const hpFilter = state.voiceContext.createBiquadFilter();
       hpFilter.type = 'highpass';
-      hpFilter.frequency.setValueAtTime(150, state.voiceContext.currentTime);
+      hpFilter.frequency.setValueAtTime(170, state.voiceContext.currentTime);
+      hpFilter.Q.setValueAtTime(1.0, state.voiceContext.currentTime);
+
+      const bodyFilter = state.voiceContext.createBiquadFilter();
+      bodyFilter.type = 'peaking';
+      bodyFilter.frequency.setValueAtTime(260, state.voiceContext.currentTime);
+      bodyFilter.Q.setValueAtTime(1.2, state.voiceContext.currentTime);
+      bodyFilter.gain.setValueAtTime(4.0, state.voiceContext.currentTime);
+
+      const nasalCutFilter = state.voiceContext.createBiquadFilter();
+      nasalCutFilter.type = 'peaking';
+      nasalCutFilter.frequency.setValueAtTime(680, state.voiceContext.currentTime);
+      nasalCutFilter.Q.setValueAtTime(1.5, state.voiceContext.currentTime);
+      nasalCutFilter.gain.setValueAtTime(-6.0, state.voiceContext.currentTime);
 
       const pitchNode = new AudioWorkletNode(state.voiceContext, 'pitch-shifter-processor');
       const pitchParam = pitchNode.parameters.get('pitch');
       if (pitchParam) {
-        pitchParam.setValueAtTime(1.65, state.voiceContext.currentTime);
+        pitchParam.setValueAtTime(1.42, state.voiceContext.currentTime); // Sweet young female ratio (around 1.42 - 1.45)
       }
 
-      const f1Resonance = state.voiceContext.createBiquadFilter();
-      f1Resonance.type = 'peaking';
-      f1Resonance.frequency.setValueAtTime(1200, state.voiceContext.currentTime);
-      f1Resonance.Q.setValueAtTime(1.2, state.voiceContext.currentTime);
-      f1Resonance.gain.setValueAtTime(3.0, state.voiceContext.currentTime);
+      const presenceFilter = state.voiceContext.createBiquadFilter();
+      presenceFilter.type = 'peaking';
+      presenceFilter.frequency.setValueAtTime(1300, state.voiceContext.currentTime);
+      presenceFilter.Q.setValueAtTime(1.0, state.voiceContext.currentTime);
+      presenceFilter.gain.setValueAtTime(3.0, state.voiceContext.currentTime);
 
-      const f2Resonance = state.voiceContext.createBiquadFilter();
-      f2Resonance.type = 'peaking';
-      f2Resonance.frequency.setValueAtTime(2800, state.voiceContext.currentTime);
-      f2Resonance.Q.setValueAtTime(1.5, state.voiceContext.currentTime);
-      f2Resonance.gain.setValueAtTime(4.0, state.voiceContext.currentTime);
+      const sparkleFilter = state.voiceContext.createBiquadFilter();
+      sparkleFilter.type = 'peaking';
+      sparkleFilter.frequency.setValueAtTime(3600, state.voiceContext.currentTime);
+      sparkleFilter.Q.setValueAtTime(1.5, state.voiceContext.currentTime);
+      sparkleFilter.gain.setValueAtTime(6.0, state.voiceContext.currentTime);
 
-      const highShelf = state.voiceContext.createBiquadFilter();
-      highShelf.type = 'highshelf';
-      highShelf.frequency.setValueAtTime(6000, state.voiceContext.currentTime);
-      highShelf.gain.setValueAtTime(2.0, state.voiceContext.currentTime);
+      const airFilter = state.voiceContext.createBiquadFilter();
+      airFilter.type = 'highshelf';
+      airFilter.frequency.setValueAtTime(7000, state.voiceContext.currentTime);
+      airFilter.gain.setValueAtTime(2.0, state.voiceContext.currentTime);
 
       state.voiceDest = state.voiceContext.createMediaStreamDestination();
 
       sourceNode.connect(hpFilter);
-      hpFilter.connect(pitchNode);
-      pitchNode.connect(f1Resonance);
-      f1Resonance.connect(f2Resonance);
-      f2Resonance.connect(highShelf);
-      highShelf.connect(state.voiceDest);
+      hpFilter.connect(bodyFilter);
+      bodyFilter.connect(nasalCutFilter);
+      nasalCutFilter.connect(pitchNode);
+      pitchNode.connect(presenceFilter);
+      presenceFilter.connect(sparkleFilter);
+      sparkleFilter.connect(airFilter);
+      airFilter.connect(state.voiceDest);
 
       const processedTrack = state.voiceDest.stream.getAudioTracks()[0];
       await sender.replaceTrack(processedTrack);
@@ -3166,10 +3221,12 @@ async function toggleVoiceChanger() {
       state.voiceNodes = {
         sourceNode,
         hpFilter,
+        bodyFilter,
+        nasalCutFilter,
         pitchNode,
-        f1Resonance,
-        f2Resonance,
-        highShelf
+        presenceFilter,
+        sparkleFilter,
+        airFilter
       };
 
       dom.callVoiceChangeBtn.classList.add('active');

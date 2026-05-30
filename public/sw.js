@@ -3,7 +3,7 @@
  * Ensures offline capability, instant local asset loading, and installability.
  */
 
-const CACHE_NAME = 'cryptchat-cache-v24';
+const CACHE_NAME = 'cryptchat-cache-v26';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
