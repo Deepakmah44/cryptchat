@@ -2424,6 +2424,8 @@ input[type="password"] {
   border: 1.5px solid var(--accent-cyan);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8);
   overflow: hidden;
+  /* Allow position:absolute children (resize handle) to receive pointer events on mobile */
+  touch-action: none;
   transition: all var(--transition-normal);
   z-index: 105;
 }
@@ -2578,4 +2580,33 @@ input[type="password"] {
   50% { transform: scale(1.06); box-shadow: 0 0 24px rgba(236, 72, 153, 0.85); }
 }
 
+/* Dragging mode overrides transition to prevent lag */
+.call-overlay.minimized.dragging {
+  transition: none !important;
+  cursor: grabbing !important;
+}
 
+/* WhatsApp-style bottom-left resize handle */
+.minimized-resize-handle {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  display: none; /* Only visible in minimized mode */
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 4px;
+  cursor: nesw-resize;
+  z-index: 30;
+  color: rgba(255, 255, 255, 0.4);
+  transition: color var(--transition-fast);
+}
+
+.call-overlay.minimized .minimized-resize-handle {
+  display: flex;
+}
+
+.minimized-resize-handle:hover {
+  color: var(--accent-cyan);
+}

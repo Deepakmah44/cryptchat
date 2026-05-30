@@ -3,6 +3,7 @@ node_modules/
 
 # Exclude local transient message persistence database
 messages.json
+database.json
 
 # Exclude git repository data
 .git/

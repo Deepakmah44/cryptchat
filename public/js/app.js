@@ -46,6 +46,8 @@ const state = {
   voiceChangerActive: false,
   voiceContext: null,
   voiceDest: null,
+  voiceNodes: null,
+  originalAudioTrack: null,
 };
 
 // ── DOM Refs ──
@@ -1872,6 +1874,8 @@ function initEventListeners() {
           maximizeCall();
           return;
         }
+        // Suppress toggle if user just finished dragging (hasMoved flag)
+        if (hasMoved) return;
         dom.callOverlay.classList.toggle('touched');
       }
     });
@@ -1909,6 +1913,9 @@ function initEventListeners() {
   // ── Read Receipts and Reconnection on Focus ──
   window.addEventListener('focus', handleWindowFocus);
   document.addEventListener('visibilitychange', handleWindowFocus);
+
+  // Initialize floating and resizable drag-snapping call popup handlers
+  setupFloatingCallControls();
 }
 
 async function handleWindowFocus() {
@@ -2259,7 +2266,7 @@ async function setupWebRTC() {
       state.callStartTime = Date.now();
     }
     
-    // Start active call timer display
+    // Start active call timer display — only once per connected call
     startCallTimer();
 
 
@@ -2745,7 +2752,10 @@ function _applyBitrateLimits() {
 
 function startCallTimer() {
   stopCallTimer(); // Ensure any existing timer is cleared
-  state.callStartTime = Date.now();
+  // Do NOT overwrite callStartTime here — it is set once in ontrack to preserve accuracy
+  if (!state.callStartTime) {
+    state.callStartTime = Date.now();
+  }
   
   dom.callStatusLabel.textContent = `00:00`;
   
@@ -2768,6 +2778,13 @@ function stopCallTimer() {
 
 function minimizeCall() {
   if (state.callState === 'idle') return;
+  // Clear any previous dragging inline styles first
+  dom.callOverlay.style.width = '';
+  dom.callOverlay.style.height = '';
+  dom.callOverlay.style.top = '';
+  dom.callOverlay.style.left = '';
+  dom.callOverlay.style.bottom = '';
+  dom.callOverlay.style.right = '';
   dom.callOverlay.classList.add('minimized');
   addCallSystemNotice('🗗 Call minimized', false);
 }
@@ -2775,7 +2792,226 @@ function minimizeCall() {
 function maximizeCall() {
   dom.callOverlay.classList.remove('minimized');
   dom.callOverlay.classList.remove('touched');
+  // Clear drag & resize inline styles so default fullscreen CSS takes over
+  dom.callOverlay.style.width = '';
+  dom.callOverlay.style.height = '';
+  dom.callOverlay.style.top = '';
+  dom.callOverlay.style.left = '';
+  dom.callOverlay.style.bottom = '';
+  dom.callOverlay.style.right = '';
   addCallSystemNotice('🗖 Call maximized', false);
+}
+
+let isDragging = false;
+let isResizing = false;
+let startX = 0, startY = 0;
+let startWidth = 0, startHeight = 0;
+let overlayLeft = 0, overlayTop = 0;
+let dragThreshold = 5;
+let hasMoved = false;
+
+function setupFloatingCallControls() {
+  const overlay = dom.callOverlay;
+  const resizeHandle = document.getElementById('minimized-resize-handle');
+
+  let lastTap = 0;
+  overlay.addEventListener('pointerdown', (e) => {
+    if (!overlay.classList.contains('minimized')) return;
+    
+    if (e.target.closest('.minimized-action-btn') || e.target.closest('#minimized-resize-handle')) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastTap < 300) {
+      e.preventDefault();
+      toggleMinimizedSize();
+      return;
+    }
+    lastTap = now;
+
+    isDragging = true;
+    hasMoved = false;
+    startX = e.clientX;
+    startY = e.clientY;
+    
+    const rect = overlay.getBoundingClientRect();
+    overlayLeft = rect.left;
+    overlayTop = rect.top;
+
+    overlay.classList.add('dragging');
+    overlay.setPointerCapture(e.pointerId);
+  });
+
+  overlay.addEventListener('pointermove', (e) => {
+    if (!overlay.classList.contains('minimized')) return;
+
+    if (isDragging) {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+
+      if (!hasMoved && (Math.abs(dx) > dragThreshold || Math.abs(dy) > dragThreshold)) {
+        hasMoved = true;
+        overlay.style.bottom = 'auto';
+        overlay.style.right = 'auto';
+      }
+
+      if (hasMoved) {
+        let newLeft = overlayLeft + dx;
+        let newTop = overlayTop + dy;
+
+        const rect = overlay.getBoundingClientRect();
+        const maxLeft = window.innerWidth - rect.width;
+        const maxTop = window.innerHeight - rect.height;
+
+        newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+        newTop = Math.max(0, Math.min(newTop, maxTop));
+
+        overlay.style.left = `${newLeft}px`;
+        overlay.style.top = `${newTop}px`;
+      }
+    }
+  });
+
+  const endDrag = (e) => {
+    if (!overlay.classList.contains('minimized')) return;
+
+    if (isDragging) {
+      isDragging = false;
+      overlay.classList.remove('dragging');
+      try { overlay.releasePointerCapture(e.pointerId); } catch (err) {}
+
+      if (hasMoved) {
+        const rect = overlay.getBoundingClientRect();
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        const margin = 16;
+        const topMargin = 16;
+        const bottomMargin = 100;
+
+        let targetLeft = margin;
+        if (rect.left + rect.width / 2 > screenWidth / 2) {
+          targetLeft = screenWidth - rect.width - margin;
+        }
+
+        let targetTop = rect.top;
+        if (targetTop < topMargin) targetTop = topMargin;
+        if (targetTop > screenHeight - rect.height - bottomMargin) {
+          targetTop = screenHeight - rect.height - bottomMargin;
+        }
+
+        overlay.style.left = `${targetLeft}px`;
+        overlay.style.top = `${targetTop}px`;
+      }
+    }
+  };
+
+  overlay.addEventListener('pointerup', endDrag);
+  overlay.addEventListener('pointercancel', endDrag);
+
+  if (resizeHandle) {
+    resizeHandle.addEventListener('pointerdown', (e) => {
+      if (!overlay.classList.contains('minimized')) return;
+      e.stopPropagation();
+      e.preventDefault();
+
+      isResizing = true;
+      startX = e.clientX;
+      startY = e.clientY;
+
+      const rect = overlay.getBoundingClientRect();
+      startWidth = rect.width;
+      startHeight = rect.height;
+
+      overlay.classList.add('dragging');
+      resizeHandle.setPointerCapture(e.pointerId);
+    });
+
+    resizeHandle.addEventListener('pointermove', (e) => {
+      if (!isResizing) return;
+      e.stopPropagation();
+
+      const dx = startX - e.clientX; 
+      const dy = e.clientY - startY; 
+
+      const aspect = 140 / 210;
+      let newWidth = startWidth + dx;
+      
+      const minW = 120;
+      const maxW = 260;
+      
+      if (newWidth < minW) newWidth = minW;
+      if (newWidth > maxW) newWidth = maxW;
+
+      let newHeight = newWidth / aspect;
+
+      const rect = overlay.getBoundingClientRect();
+      const currentTop = rect.top;
+      let newLeft = rect.right - newWidth;
+
+      if (newLeft < 0) {
+        newWidth = rect.right;
+        newHeight = newWidth / aspect;
+        newLeft = 0;
+      }
+
+      if (currentTop + newHeight > window.innerHeight - 20) {
+        newHeight = window.innerHeight - 20 - currentTop;
+        newWidth = newHeight * aspect;
+        newLeft = rect.right - newWidth;
+      }
+
+      overlay.style.width = `${newWidth}px`;
+      overlay.style.height = `${newHeight}px`;
+      overlay.style.left = `${newLeft}px`;
+      overlay.style.bottom = 'auto';
+      overlay.style.right = 'auto';
+    });
+
+    const endResize = (e) => {
+      if (isResizing) {
+        isResizing = false;
+        overlay.classList.remove('dragging');
+        try { resizeHandle.releasePointerCapture(e.pointerId); } catch (err) {}
+      }
+    };
+
+    resizeHandle.addEventListener('pointerup', endResize);
+    resizeHandle.addEventListener('pointercancel', endResize);
+  }
+}
+
+function toggleMinimizedSize() {
+  const overlay = dom.callOverlay;
+  if (!overlay.classList.contains('minimized')) return;
+
+  const rect = overlay.getBoundingClientRect();
+  const currentWidth = rect.width;
+  
+  const isCompact = currentWidth < 170;
+  const targetWidth = isCompact ? 200 : 140;
+  const targetHeight = isCompact ? 300 : 210;
+
+  let targetLeft = rect.right - targetWidth;
+  if (targetLeft < 16) targetLeft = 16;
+  if (targetLeft + targetWidth > window.innerWidth - 16) {
+    targetLeft = window.innerWidth - targetWidth - 16;
+  }
+
+  let targetTop = rect.top;
+  if (targetTop + targetHeight > window.innerHeight - 100) {
+    targetTop = window.innerHeight - targetHeight - 100;
+  }
+  if (targetTop < 16) targetTop = 16;
+
+  overlay.style.width = `${targetWidth}px`;
+  overlay.style.height = `${targetHeight}px`;
+  overlay.style.left = `${targetLeft}px`;
+  overlay.style.top = `${targetTop}px`;
+  overlay.style.bottom = 'auto';
+  overlay.style.right = 'auto';
+
+  addCallSystemNotice(isCompact ? '🗖 Floating window enlarged' : '🗗 Floating window compressed', false);
 }
 
 async function initVoiceChanger() {
@@ -2864,6 +3100,11 @@ async function toggleVoiceChanger() {
   const audioTrack = state.localStream.getAudioTracks()[0];
   if (!audioTrack) return;
 
+  // Save original mic track reference for reliable restore
+  if (!state.originalAudioTrack) {
+    state.originalAudioTrack = audioTrack;
+  }
+
   const sender = state.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
   if (!sender) return;
 
@@ -2945,7 +3186,10 @@ async function toggleVoiceChanger() {
     }
   } else {
     try {
-      await sender.replaceTrack(audioTrack);
+      // Restore original mic track (not the currently toggled muted state)
+      const restoreTrack = state.originalAudioTrack || state.localStream.getAudioTracks()[0];
+      await sender.replaceTrack(restoreTrack);
+      state.originalAudioTrack = null;
 
       if (state.voiceNodes) {
         Object.values(state.voiceNodes).forEach(node => {
@@ -2976,6 +3220,8 @@ function resetCallUI() {
 
   state.isCaller = false;
   state.voiceChangerActive = false;
+  state.originalAudioTrack = null;
+  state.voiceNodes = null;
   if (state.voiceContext) {
     if (state.voiceContext.state !== 'closed') {
       state.voiceContext.close().catch(() => {});
@@ -3031,6 +3277,14 @@ function resetCallUI() {
   dom.callOverlay.classList.remove('touched');
   dom.callOverlay.classList.remove('video-active');
   dom.callOverlay.classList.add('hidden');
+  
+  // Clear drag & resize inline styles
+  dom.callOverlay.style.width = '';
+  dom.callOverlay.style.height = '';
+  dom.callOverlay.style.top = '';
+  dom.callOverlay.style.left = '';
+  dom.callOverlay.style.bottom = '';
+  dom.callOverlay.style.right = '';
 }
 
 // ═══════════════════════════════════════════
