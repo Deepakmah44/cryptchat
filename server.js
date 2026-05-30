@@ -111,13 +111,15 @@ wss.on('connection', (ws, req) => {
 
   // WebSocket Origin Validation (prevent cross-site WebSocket hijacking)
   const origin = req.headers.origin || '';
-  const allowedOrigins = [
-    'https://cryptchat-p.onrender.com',
-    'http://localhost:3000',
-    'http://localhost',
-    'https://localhost'
-  ];
-  if (origin && !allowedOrigins.some(o => origin.startsWith(o))) {
+  const isLocal = origin.startsWith('http://localhost') || 
+                  origin.startsWith('https://localhost') || 
+                  origin.startsWith('http://127.0.0.1') || 
+                  origin.startsWith('http://0.0.0.0') ||
+                  /^http:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(origin);
+                  
+  const isAllowedProd = origin.startsWith('https://cryptchat-p.onrender.com');
+
+  if (origin && !isLocal && !isAllowedProd) {
     ws.close(1008, 'Origin not allowed');
     return;
   }

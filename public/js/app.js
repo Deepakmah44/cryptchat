@@ -189,7 +189,6 @@ function initParticles() {
       ctx.fill();
     }
   }
-
   // Fewer particles on mobile for ultra performance (16 particles)
   const isMobile = window.innerWidth < 768;
   const count = isMobile ? 16 : 65;
@@ -207,8 +206,13 @@ function initParticles() {
     });
 
     // Draw lines only between close particles
-    // On mobile, reduce connection distance to keep it clean and fast
-    const maxDist = isMobile ? 85 : 120;
+    // On mobile, skip drawing lines entirely for 10x performance boost!
+    if (isMobile) {
+      animId = requestAnimationFrame(animate);
+      return;
+    }
+
+    const maxDist = 120;
     const maxDistSq = maxDist * maxDist;
 
     for (let i = 0; i < particles.length; i++) {
@@ -265,6 +269,10 @@ function initParticles() {
   document.addEventListener('visibilitychange', onVisibilityChange, { passive: true });
   window.addEventListener('blur', pause, { passive: true });
   window.addEventListener('focus', resume, { passive: true });
+
+  // Expose pause/resume globally
+  window.pauseParticles = pause;
+  window.resumeParticles = resume;
 
   // Draw once initially
   if (prefersReducedMotion) {
@@ -411,9 +419,11 @@ async function handleServerMessage(msg) {
       // Save session to storage for persistence across reloads/background sleep
       saveSessionToStorage();
       
-      // Render one-time visualization keys
-      document.getElementById('created-upper-key').textContent = msg.upperKey;
-      document.getElementById('created-lower-key').textContent = msg.lowerKey;
+      // Render one-time visualization key
+      const createdCombinedKey = document.getElementById('created-combined-key');
+      if (createdCombinedKey) {
+        createdCombinedKey.textContent = `${msg.upperKey}-${msg.lowerKey}`;
+      }
       document.getElementById('created-keys-container').classList.remove('hidden');
 
       // Derive E2EE key locally via PBKDF2 symmetrically
@@ -1360,6 +1370,11 @@ function switchToChat() {
   dom.chatScreen.style.animation = 'screenTransition 0.45s cubic-bezier(0.16, 1, 0.3, 1) both';
   dom.displayRoomCode.textContent = state.roomCode;
   
+  // Pause particles animation while inside chat screen to save massive CPU/GPU battery
+  if (typeof window.pauseParticles === 'function') {
+    window.pauseParticles();
+  }
+
   // Auto-fit layout and scroll to bottom
   adjustChatViewport();
   setTimeout(scrollToBottom, 150);
@@ -1372,6 +1387,11 @@ function switchToJoin() {
   dom.chatScreen.classList.remove('active');
   dom.joinScreen.classList.add('active');
   
+  // Resume particles animation when returning to join screen
+  if (typeof window.resumeParticles === 'function') {
+    window.resumeParticles();
+  }
+
   // Clear persistent session storage on explicit leave
   sessionStorage.removeItem('cryptchat_room_code');
   sessionStorage.removeItem('cryptchat_user_id');
@@ -1656,20 +1676,24 @@ function initEventListeners() {
       : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
   });
 
-  // 4x2 Grid Auto-focus and shift logic
-  const boxes = document.querySelectorAll('.key-box');
-  boxes.forEach((box, idx) => {
-    box.addEventListener('input', () => {
-      if (box.value.length === 1 && idx < boxes.length - 1) {
-        boxes[idx + 1].focus();
+  // Sleek Secure Key Formatter (XXXX-XXXX)
+  const roomKeyInput = document.getElementById('room-key-input');
+  if (roomKeyInput) {
+    roomKeyInput.addEventListener('input', () => {
+      let val = roomKeyInput.value.toUpperCase();
+      // Remove all non-alphanumeric chars
+      val = val.replace(/[^A-Z0-9]/g, '');
+      
+      // Auto-insert hyphen after 4th char
+      if (val.length > 4) {
+        val = val.substring(0, 4) + '-' + val.substring(4, 8);
+      } else {
+        val = val.substring(0, 4);
       }
+      
+      roomKeyInput.value = val;
     });
-    box.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && box.value.length === 0 && idx > 0) {
-        boxes[idx - 1].focus();
-      }
-    });
-  });
+  }
 
   // Create Room
   dom.createRoomBtn.addEventListener('click', async () => {
@@ -1703,12 +1727,12 @@ function initEventListeners() {
   const copyBtn = document.getElementById('copy-keys-btn');
   if (copyBtn) {
     copyBtn.addEventListener('click', async () => {
-      const textToCopy = `Upper Key: ${state.upperKey}\nLower Key: ${state.lowerKey}`;
+      const textToCopy = `${state.upperKey}-${state.lowerKey}`;
       try {
         await navigator.clipboard.writeText(textToCopy);
         copyBtn.textContent = 'Copied Successfully!';
         setTimeout(() => {
-          copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Keys`;
+          copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Secure Key`;
         }, 2000);
       } catch (err) {
         const textarea = document.createElement('textarea');
@@ -1739,14 +1763,14 @@ function initEventListeners() {
       dom.usernameInput.value = username;
     }
 
-    // Combine Upper & Lower keys from grid boxes
-    let combinedKey = '';
-    boxes.forEach(box => {
-      combinedKey += box.value.trim();
-    });
+    const keyInput = document.getElementById('room-key-input');
+    let combinedKey = keyInput ? keyInput.value.trim().toUpperCase() : '';
+    // Strip hyphens and whitespace to get the raw 8 characters
+    combinedKey = combinedKey.replace(/[^A-Z0-9]/g, '');
 
     if (combinedKey.length !== 8) {
-      showJoinError('Please fill all 8 key grid boxes.');
+      showJoinError('Please enter a valid 8-character Secure Room Key.');
+      if (keyInput) keyInput.focus();
       return;
     }
 
@@ -1761,15 +1785,16 @@ function initEventListeners() {
     } catch {
       showJoinError('Cannot connect to server. Is it running?');
       dom.joinRoomBtn.disabled = false;
-      dom.joinRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Join Secure Room`;
+      dom.joinRoomBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Join Private Room`;
     }
   });
 
-  // Enter key on username — focus first key box
+  // Enter key on username — focus room key input
   dom.usernameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (boxes[0]) boxes[0].focus();
+      const keyInput = document.getElementById('room-key-input');
+      if (keyInput) keyInput.focus();
     }
   });
 
@@ -3404,10 +3429,14 @@ async function restoreSavedSession() {
       state.secretPhrase = savedSecretPhrase;
     }
     if (savedCombinedKey) {
-      const boxes = document.querySelectorAll('.key-box');
-      boxes.forEach((box, idx) => {
-        if (box) box.value = savedCombinedKey[idx] || '';
-      });
+      const keyInput = document.getElementById('room-key-input');
+      if (keyInput) {
+        if (savedCombinedKey.length === 8) {
+          keyInput.value = savedCombinedKey.substring(0, 4) + '-' + savedCombinedKey.substring(4, 8);
+        } else {
+          keyInput.value = savedCombinedKey;
+        }
+      }
       state.combinedKey = savedCombinedKey;
     }
 

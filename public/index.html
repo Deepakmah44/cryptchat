@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=6">
+  <link rel="stylesheet" href="/css/style.css?v=12">
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/img/icon.svg">
   
@@ -123,23 +123,11 @@
 
             <!-- Join Room Content -->
             <div class="sub-tab-content active" id="subtab-join">
-              <div class="join-inputs-wrapper">
-                <div class="key-grid-section">
-                  <label class="cyber-label">Upper Secure Key</label>
-                  <div class="key-grid row-upper">
-                    <input type="text" class="key-box" maxlength="1" data-index="0" autocomplete="off" spellcheck="false" placeholder="•">
-                    <input type="text" class="key-box" maxlength="1" data-index="1" autocomplete="off" spellcheck="false" placeholder="•">
-                    <input type="text" class="key-box" maxlength="1" data-index="2" autocomplete="off" spellcheck="false" placeholder="•">
-                    <input type="text" class="key-box" maxlength="1" data-index="3" autocomplete="off" spellcheck="false" placeholder="•">
-                  </div>
-                  
-                  <label class="cyber-label" style="margin-top: 14px; display: block;">Lower Secure Key</label>
-                  <div class="key-grid row-lower">
-                    <input type="text" class="key-box" maxlength="1" data-index="4" autocomplete="off" spellcheck="false" placeholder="•">
-                    <input type="text" class="key-box" maxlength="1" data-index="5" autocomplete="off" spellcheck="false" placeholder="•">
-                    <input type="text" class="key-box" maxlength="1" data-index="6" autocomplete="off" spellcheck="false" placeholder="•">
-                    <input type="text" class="key-box" maxlength="1" data-index="7" autocomplete="off" spellcheck="false" placeholder="•">
-                  </div>
+              <div class="join-inputs-wrapper" style="margin-top: 10px;">
+                <div class="input-group" style="text-align: left; width: 100%;">
+                  <label for="room-key-input" class="cyber-label">Secure Room Key</label>
+                  <input type="text" id="room-key-input" placeholder="e.g. ABCD-EFGH" maxlength="9" autocomplete="off" spellcheck="false" style="text-transform: uppercase; font-family: var(--font-mono); letter-spacing: 2px; text-align: center; font-size: 1.25rem; font-weight: 700; width: 100%;">
+                  <small style="color: var(--text-secondary); font-size: 0.72rem; margin-top: 5px; display: block; text-align: center;">Enter the 8-character secure key to connect to the private chat room.</small>
                 </div>
               </div>
 
@@ -166,21 +154,15 @@
               <div id="created-keys-container" class="created-keys-card hidden" style="margin-top: 15px;">
                 <div class="created-keys-header">
                   <span class="keys-warning-icon">🔑</span>
-                  <p>Room created. Copy keys now. They are never shown again.</p>
+                  <p>Room created. Copy and share the Secure Room Key below. It will never be shown again.</p>
                 </div>
-                <div class="keys-display-row">
-                  <div class="key-display-box">
-                    <span class="key-label">Upper Key</span>
-                    <span id="created-upper-key" class="key-value">-</span>
-                  </div>
-                  <div class="key-display-box">
-                    <span class="key-label">Lower Key</span>
-                    <span id="created-lower-key" class="key-value">-</span>
-                  </div>
+                <div class="key-display-box" style="margin-bottom: 12px; padding: 12px; background: rgba(8, 12, 24, 0.8); border-radius: 6px; text-align: center; border: 1px solid rgba(6, 182, 212, 0.15);">
+                  <span class="key-label" style="font-size: 0.7rem; color: var(--text-secondary); text-transform: uppercase; display: block; margin-bottom: 4px; letter-spacing: 1px;">Secure Room Key</span>
+                  <span id="created-combined-key" class="key-value" style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 800; color: var(--text-accent); letter-spacing: 2px;">---------</span>
                 </div>
                 <button id="copy-keys-btn" class="btn btn-secondary small" style="width: 100%; margin-bottom: 8px;">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                  Copy Keys
+                  Copy Secure Key
                 </button>
                 <button id="enter-created-room-btn" class="btn btn-primary small" style="width: 100%;">
                   Enter Chat Room
@@ -402,6 +384,6 @@
     </div>
   </div>
 
-  <script type="module" src="/js/app.js?v=16"></script>
+  <script type="module" src="/js/app.js?v=22"></script>
 </body>
 </html>
