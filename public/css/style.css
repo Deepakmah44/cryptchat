@@ -1552,24 +1552,56 @@ input[type="password"] {
     -webkit-backdrop-filter: none !important;
     background: rgba(8, 12, 24, 0.96) !important;
     border-color: rgba(6, 182, 212, 0.25) !important;
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.8), 0 0 24px rgba(6, 182, 212, 0.05) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+  }
+  
+  /* Kill the expensive gradient border pseudo-element on mobile — massive GPU saver */
+  .glass-card::before {
+    display: none !important;
   }
   
   /* Stop massive background repaint updates on mobile */
   .orb-1, .orb-2, .ambient-glow::after {
     animation: none !important;
-    opacity: 0.12 !important;
+    opacity: 0.08 !important;
+    filter: none !important;
   }
 
+  /* Kill orbit ring continuous rotation animations on mobile */
+  .logo-orbit-ring,
+  .logo-orbit-ring::after {
+    animation: none !important;
+  }
+  
+  /* Kill logo float animation on mobile */
+  .logo-icon {
+    width: 56px;
+    height: 56px;
+    animation: none !important;
+    filter: drop-shadow(0 0 8px rgba(6, 182, 212, 0.3)) !important;
+  }
+
+  /* Simplify screen transitions on mobile */
+  .screen.active {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Disable will-change on mobile — frees GPU layer memory */
+  .logo-section,
+  .join-form,
+  .security-badges,
+  .badge,
+  .glass-card {
+    will-change: auto !important;
+    animation-duration: 0s !important;
+  }
+  
   .key-box {
     height: 44px;
     font-size: 1.1rem;
     max-width: 44px;
-  }
-  
-  .logo-icon {
-    width: 60px;
-    height: 60px;
   }
   
   .logo-text {
@@ -1580,8 +1612,6 @@ input[type="password"] {
     padding: 10px 12px;
     padding-bottom: calc(10px + var(--safe-bottom));
   }
-
-
 }
 /* Tablets and up */
 @media (min-width: 768px) {

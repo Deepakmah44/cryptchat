@@ -366,6 +366,7 @@ function connectWebSocket() {
 }
 
 function attemptReconnect() {
+  if (!state.roomCode) return;
   state.reconnectAttempts++;
   if (state.roomCode) {
     updateConnectionStatus('offline', 'Disconnected');
@@ -382,8 +383,10 @@ function attemptReconnect() {
   }
 
   state.reconnectTimeoutId = setTimeout(async () => {
+    if (!state.roomCode) return;
     try {
       await connectWebSocket();
+      if (!state.roomCode) return;
       // Re-join the room with original userId to resume same session
       send({
         type: 'join-room',
@@ -762,9 +765,9 @@ async function sendMessage() {
       }
       cancelEditMode();
       dom.messageInput.value = '';
-      dom.messageInput.style.height = 'auto';
-      // Keep keyboard open on mobile
-      setTimeout(() => dom.messageInput.focus(), 50);
+      dom.messageInput.style.height = '44px';
+      // Keep keyboard open — no blur/refocus cycle
+      dom.messageInput.focus();
       return;
     } catch (err) {
       console.error('Edit encryption failed:', err);
@@ -798,9 +801,10 @@ async function sendMessage() {
         });
 
         dom.messageInput.value = '';
-        dom.messageInput.style.height = 'auto';
+        dom.messageInput.style.height = '44px';
         sendTypingStatus(false);
-        setTimeout(() => dom.messageInput.focus(), 50);
+        // Keep keyboard open — no blur/refocus cycle
+        dom.messageInput.focus();
         return;
       }
       return;
@@ -831,10 +835,10 @@ async function sendMessage() {
     });
 
     dom.messageInput.value = '';
-    dom.messageInput.style.height = 'auto';
+    dom.messageInput.style.height = '44px';
     sendTypingStatus(false);
-    // Keep keyboard open on mobile after sending
-    setTimeout(() => dom.messageInput.focus(), 50);
+    // Keep keyboard open — no blur/refocus cycle
+    dom.messageInput.focus();
   } catch (err) {
     console.error('Encryption failed:', err);
     addSystemNotice('⚠️ Failed to encrypt message.');
@@ -1160,12 +1164,10 @@ function addSystemNotice(text) {
 }
 
 function scrollToBottom() {
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  requestAnimationFrame(() => {
-    dom.messagesContainer.scrollTo({
-      top: dom.messagesContainer.scrollHeight,
-      behavior: prefersReducedMotion ? 'auto' : 'smooth'
-    });
+  const isMobile = window.innerWidth < 768;
+  dom.messagesContainer.scrollTo({
+    top: dom.messagesContainer.scrollHeight,
+    behavior: isMobile ? 'auto' : 'smooth'
   });
 }
 
@@ -1383,6 +1385,13 @@ function switchToChat() {
 function switchToJoin() {
   // Reset any active call UI and media tracks (Bug Fix)
   resetCallUI();
+
+  // Clear reconnect timeout and count to prevent background reconnect loops
+  if (state.reconnectTimeoutId) {
+    clearTimeout(state.reconnectTimeoutId);
+    state.reconnectTimeoutId = null;
+  }
+  state.reconnectAttempts = 0;
 
   dom.chatScreen.classList.remove('active');
   dom.joinScreen.classList.add('active');
@@ -1676,22 +1685,53 @@ function initEventListeners() {
       : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
   });
 
-  // Sleek Secure Key Formatter (XXXX-XXXX)
+  // Sleek Secure Key Formatter (XXXX-XXXX) with Cursor Position Preservation
   const roomKeyInput = document.getElementById('room-key-input');
   if (roomKeyInput) {
-    roomKeyInput.addEventListener('input', () => {
-      let val = roomKeyInput.value.toUpperCase();
+    roomKeyInput.addEventListener('input', (e) => {
+      const cursor = roomKeyInput.selectionStart;
+      const originalValue = roomKeyInput.value;
+      
+      // Count alphanumeric characters before the cursor
+      let cleanCharsBeforeCursor = 0;
+      for (let i = 0; i < cursor; i++) {
+        if (/[A-Z0-9]/i.test(originalValue[i])) {
+          cleanCharsBeforeCursor++;
+        }
+      }
+      
+      let val = originalValue.toUpperCase();
       // Remove all non-alphanumeric chars
       val = val.replace(/[^A-Z0-9]/g, '');
       
-      // Auto-insert hyphen after 4th char
+      // Format with hyphen
+      let formattedVal = '';
       if (val.length > 4) {
-        val = val.substring(0, 4) + '-' + val.substring(4, 8);
+        formattedVal = val.substring(0, 4) + '-' + val.substring(4, 8);
       } else {
-        val = val.substring(0, 4);
+        formattedVal = val.substring(0, 4);
       }
       
-      roomKeyInput.value = val;
+      roomKeyInput.value = formattedVal;
+      
+      // Calculate new cursor position
+      let newCursor = 0;
+      let cleanCount = 0;
+      while (newCursor < formattedVal.length && cleanCount < cleanCharsBeforeCursor) {
+        if (formattedVal[newCursor] !== '-') {
+          cleanCount++;
+        }
+        newCursor++;
+      }
+      
+      // If a hyphen was just auto-inserted or bypassed, adjust cursor
+      if (newCursor < formattedVal.length && formattedVal[newCursor] === '-' && cleanCount === cleanCharsBeforeCursor) {
+        if (e.inputType !== 'deleteContentBackward') {
+          newCursor++;
+        }
+      }
+      
+      roomKeyInput.setSelectionRange(newCursor, newCursor);
     });
   }
 
@@ -3417,6 +3457,14 @@ async function restoreSavedSession() {
   const savedCombinedKey = sessionStorage.getItem('cryptchat_combined_key');
 
   if (savedRoomCode && savedUsername) {
+    // Only restore P-rooms (personal direct connection), as standard Room Code rooms require the symmetric key which is not persisted in sessionStorage (Bug #6)
+    if (!savedRoomCode.startsWith('P')) {
+      // Clear standard room session data so they can log in cleanly
+      sessionStorage.removeItem('cryptchat_room_code');
+      sessionStorage.removeItem('cryptchat_user_id');
+      sessionStorage.removeItem('cryptchat_username');
+      return;
+    }
     console.log('Restoring saved session for room:', savedRoomCode);
     state.roomCode = savedRoomCode;
     state.userId = savedUserId;
